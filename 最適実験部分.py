@@ -5,37 +5,32 @@ import random
 import math as mt
 import openpyxl as op
 import sys 
+import math
+import csv
 
 
 
-TEST = 10                                             #実験の回数
+TEST = 100                                             #実験の回数
 
-FARMS = 100                                             #参加農家数
-D= 7                                                    #予報日数
-KOUYOUKAKURITU = 0.6                                    #農家が働く確率
+FARMERS = 150                                             #参加農家数
+D= 7                                                    #期間日数
+
+#要修正
 # パラメータ設定（例: l, k, vなど）
-l = 1 #1台を移動させるのに必要なコスト
-k = 100 #開墾した農地を金額に変換する
-v = 1
-a = 1000
+l = 155/3 #1台を移動させるのに必要なコスト20分
+k = (6.5+7.1)/2 #開墾した農地を金額に変換する
+n = 12000/14#農機1台が1日に耕せる面積
+
+header = ['回数','効用確率','新機就農者割合','虚偽申告農家','虚偽申告台数','期待売上','総利益','利益']#書き込みシートの行名
+body=[]#書き込み内容
 
 
 result_value = []
 result_shiharai = []
 
 #農地面積の設定
-Area_average = 25000                                        #農地面積の平均値
-Area_haba = 300                                             #数値の根拠
-
-
-#農家の所有台数の設定
-Posess_average = 2                                               #台数の平均値
-Posess_haba = 2
-
-
-#農機を所有していない人の割合
-not_posession_rate = 0.1
-
+Area_average = 34000                                        #農地面積の平均値
+Area_haba = 10000                                             #数値の根拠なし
 
 
 
@@ -46,13 +41,13 @@ not_posession_rate = 0.1
 def sifromremove(s,t,list_w_real,list_kouyou,list_nouti,h,day):
     # 最初に二重辞書を正しく初期化
     number_2 = {}
-    for idx in range(FARMS):
+    for idx in range(FARMERS):
         number_2[idx] = {}
         for d in range(D):
             number_2[idx][d] = 0
 
     # 値を計算
-    for idx in range(FARMS):
+    for idx in range(FARMERS):
         for d in range(D):
             if list_w_real[day] * list_kouyou[idx][day] * s[idx, day].X > list_nouti[idx]:
                 number_2[idx][d] = list_nouti[idx]
@@ -62,12 +57,12 @@ def sifromremove(s,t,list_w_real,list_kouyou,list_nouti,h,day):
 
     # number_tekitou2の計算
     number_tekitou2 = 0
-    for idx in range(FARMS):
+    for idx in range(FARMERS):
         if idx != h:
             continue
         number_tekitou2 += number_2[idx][day]
     optimal_value = k * number_tekitou2 - gp.quicksum(
-        l * t[idx, day].X if idx != h else 0 for idx in range(FARMS)
+        l * t[idx, day].X if idx != h else 0 for idx in range(FARMERS)
     )
     return optimal_value
 
@@ -79,22 +74,16 @@ def Removei(z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou,h,d
     c_i = {} #c_{i,w}
     s_i = {} #s_{i,d}
     z = {} #z_{w}
-    for idx in  range(FARMS):
+    for idx in  range(FARMERS):
         for d in range(D):
-            #print(f"農家{idx}: {i.name}")  # デバッグ用
             t_i[idx, d] = model_2.addVar(vtype=gp.GRB.CONTINUOUS)  # tの名前を修正
             s_i[idx, d] = model_2.addVar(vtype=gp.GRB.INTEGER)
             for w in range(2 ** D):
-                
                     c_i[idx, w] = model_2.addVar(vtype=gp.GRB.CONTINUOUS)
-    
-
-    print("process1")
 
         # 制約条件式 Π_{d∈D}|
     for w in range(2 ** D):
             z[w] = model_2.addVar(vtype=gp.GRB.CONTINUOUS)
-    print("process2")
 
         # Wの設定
     W = {}
@@ -104,23 +93,19 @@ def Removei(z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou,h,d
         for w_range in range(D):
             # w_range の位置の文字を整数に変換して代入
             W[d, w_range] = int(w_bin[w_range])
-            #print (W) #Wの確認
-    print("process5")
 
     Z = {}
     for i in range(2 ** D):
         for d in range(D):
             Z[i,d] = model_2.addVar(vtype=gp.GRB.INTEGER)
-    print("process3")
 
     # 目的関数設定
     objective_expr = k * gp.quicksum(
-        c_i[idx, w] * z[w] if idx != h else 0 for idx in range(FARMS) for w in range(2 ** D)
+        c_i[idx, w] * z[w] if idx != h else 0 for idx in range(FARMERS) for w in range(2 ** D)
     ) - gp.quicksum(
-        l * t_i[idx, d] if idx != h else 0 for idx in range(FARMS) for d in range(D)  
+        l * t_i[idx, d] if idx != h else 0 for idx in range(FARMERS) for d in range(D)  
     )
     model_2.setObjective(objective_expr, gp.GRB.MAXIMIZE)
-    print("process4")
     
 
 
@@ -138,9 +123,8 @@ def Removei(z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou,h,d
                 break  
             prod *= diff
         model_2.addConstr(z[w] == prod)
-    print("process6")
     op = 0
-    for idx in range(FARMS):
+    for idx in range(FARMERS):
         if idx == h:
             continue
         #print("idxの数"+str(idx))
@@ -148,7 +132,7 @@ def Removei(z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou,h,d
         for w in range(2 ** D):
             model_2.addConstr(c_i[idx, w] <=list_nouti[idx])
             model_2.addConstr(
-                c_i[idx, w] <= gp.quicksum(W[w, d] * s_i[idx, d] * list_kouyou[idx][d] * a for d in range(D))
+                c_i[idx, w] <= gp.quicksum(W[w, d] * s_i[idx, d] * list_kouyou[idx][d] * n for d in range(D))
             )
         for d in range(D):
             model_2.addConstr(s_i[idx, d] >= 0)
@@ -162,65 +146,69 @@ def Removei(z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou,h,d
     for i in range(2 ** D):
         for d in range(D):
             Z_i[i,d] = model_2.addVar(vtype=gp.GRB.INTEGER)
-    print("process7")
 
 
         #print("model_2")
     #print(dict_M.values())
     for d in range(D):
         model_2.addConstr(
-            gp.quicksum(s_i[idx, d] for idx in range(FARMS)) == gp.quicksum(list_daisuu[idx] for idx in range(FARMS))
+            gp.quicksum(s_i[idx, d] for idx in range(FARMERS)) == gp.quicksum(list_daisuu[idx] for idx in range(FARMERS))
         )
-    print("process8")
         # 最適化の実行
         
     print("[Gurobi Optimize2ログ]")
     model_2.optimize()
 
     number_1 = {}
-    for idx  in range(FARMS):
+    for idx  in range(FARMERS):
         number_1[idx] = {}
         for d in range(D):
             if list_w_real[day] * s_i[idx, day].X * list_kouyou[idx][day] > list_nouti[idx]:
                 number_1[idx][d]  = list_nouti[idx]
             else:
                 number_1[idx][d] = list_w_real[day] * s_i[idx, day].X * list_kouyou[idx][day]
-    print("process9")
     number_tekitou = 0
     for w in range(2 ** D):
-        for idx in range(FARMS):
+        for idx in range(FARMERS):
             if idx == h:
                 number_tekitou += 0
             else:
-                number_tekitou += number_1[idx][day]  
-    print("process10")
+                number_tekitou += number_1[idx][day]
 
 
     optimal_value =k * number_tekitou - gp.quicksum(
 
-        l * t_i[idx, day].X if idx != h else 0 for idx in range(FARMS)  
+        l * t_i[idx, day].X if idx != h else 0 for idx in range(FARMERS)  
     )
-    print("process11")
     return optimal_value
 
 
 
 
 
-    
 
 
+
+
+def lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number):
+    while True:
+                if list_daisuu[lier_FARMER] == liers_truth:#もしliers_truth 台の農機台数の農家がいたらその人を嘘つきにする
+                    simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,liers_lie,lier_FARMER,roop_number)
+
+                    list_daisuu[lier_FARMER] = liers_truth
+                    break
+                else:  lier_FARMER = random.randint(0,FARMERS-1)
 
 
 
 def shiharai(s,c,t,z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou):#支払い決定関数
-    a = 0
+    q = 0
     for day in range(D):
-        for h in range(FARMS):
-            a += list_w_real[day]*(Removei( z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou,h,day)
+        for h in range(FARMERS):
+            q += (Removei( z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou,h,day)
                                    -sifromremove(s,t,list_w_real,list_kouyou,list_nouti,h,day)) 
     print("process12")
-    return a
+    return q
 
 def random_number(average,haba):                               #農地面積、農機台数のランダム割当関数
     gosa = average-haba
@@ -230,64 +218,139 @@ def random_number(average,haba):                               #農地面積、�
     return gosa + int(random.random()*2*haba)                   #平均からランダムで+-haba以内の値を割り当て
 
 
-def simulation(COUNT):
-    model_1 = gp.Model(name="Gurobi")
-
-
-
-    
-    #農地面積のランダム割当
-    list_nouti = []                                              #リスト農地の設定
-    for farm in range(FARMS):                                             
-        list_nouti.append(random_number(Area_average,Area_haba))   #要修正  #農地平均からランダムで平均から+-300以内の値を割り当て
-
-    #農機台数のランダム導出
-    list_daisuu = []                                                  #リスト農機台数の設定
-    for farm in range(FARMS):
-        list_daisuu.append(random_number(Posess_average,Posess_haba)) #平均農機台数からランダムで平均から+-2以内の値を割り当て
-
-
-    #農家効用のランダム導出
-    #とりあえず確率６０％(=KOUYOUKAKURITU)で働くものとする(根拠なし)
-    list_kouyou = []                                                  # リスト効用の初期化
-    for farm in range(FARMS):
-        farm_schedule = []                                            # 各農家のスケジュールを格納するリスト
-        for d in range(D):
-            if random.random() < KOUYOUKAKURITU:
-                farm_schedule.append(1)
-            else:
-                farm_schedule.append(0)
-        list_kouyou.append(farm_schedule)                              # 各農家のスケジュールをリストに追加
-
-#    #ランダムで晴か雨か決定する(割合は日本の年間平均降水日数から算出34.19%)
-#    list_hareame = []
-#    nenkankousuiritsu = 0.01*34.19
-#    for d in range(D):
-#        if random.random() <nenkankousuiritsu:
-#            list_hareame.append( 0)
-#        else:
-#            list_hareame.append(1)
-
-
-
-    #天候の設定
-    list_tenkiyohou = [] #0日目から|D|日目まで精度が0.8から0.2までを軸に幅0.17で変わっていく
-
+def Kouyou_Random(roop_number,schedule):#各農家のroop_number%で農作業を行う効用のリストを提出
     for d in range(D):
-        list_tenkiyohou.append(random.random())
-
-    
-    list_w_real = [] #0日目から|D|日目まで実際の天気
-    for d in range(D):
-        if random.random() < list_tenkiyohou[d]:
-            list_w_real.append(0)
+        if random.random() < roop_number*0.01:
+            schedule.append(1)
         else:
-            list_w_real.append(1)
+            schedule.append(0)
+        
+    return schedule
+
+def Hensuukettei(COUNT):#各配列値の詳細な設定
+    
+    
+    list_kouyou = []
+    list_daisuu = []
+    list_tenkiyohou = []
+    list_w_real = []
+    list_nouti = []
+
+    
+    
+    new_farmers_increaserate = 0.2#新規就農者の上昇率
+    new_farmers_rate = 0.0-new_farmers_increaserate#新規就農者の割合
+    
+    while(new_farmers_rate <= 1.0):
+        new_farmers_rate += new_farmers_increaserate
+        #農地面積のランダム割当
+        list_nouti.clear                                         #リスト農地の設定
+        for farm in range(FARMERS):                                             
+            list_nouti.append(random_number(Area_average,Area_haba))   #要修正  #農地平均からランダムで平均から+-300以内の値を割り当て
+            i = 0
+        roop_number =10
+        while(roop_number <= 100):
+            #農家効用のランダム導出
+            
+            list_kouyou.clear                                               # リスト効用の初期化
+            for farm in range(FARMERS):
+                farm_schedule = []                                            # 各農家のスケジュールを格納するリスト
+                list_kouyou.append(Kouyou_Random(roop_number, farm_schedule))                              # 各農家のスケジュールをリストに追加
+            roop_number += 20
+            i+=1
+
+
+            #天候の設定
+            list_tenkiyohou.clear
+            for d in range(D):
+                list_tenkiyohou.append(random.random())
+
+
+            list_w_real.clear #0日目から|D|日目まで実際の天気
+            for d in range(D):
+                if random.random() < list_tenkiyohou[d]:
+                    list_w_real.append(0)
+                else:
+                    list_w_real.append(1)
+
+
+            #農機台数のランダム導出
+            list_daisuu.clear                                                  #リスト農機台数の設定
+
+            for farm in range(FARMERS):
+                if farm <=FARMERS*(1-new_farmers_rate):    # まず全員に1台ずつ配分
+                    list_daisuu.append(1)
+                else:# 残りの農機をランダムに配分
+                    list_daisuu.append(0)
+
+            gap = math.inf
+            for farm in range(FARMERS):#すべての農家が同じような農機台数を所持しているときの農機割当
+                
+                last_used_random = []
+                while ((sum(list_daisuu)+1)/len(list_daisuu) -1.33990801659)< gap:
+                    t = random.randint(0,(FARMERS-1))
+                    gap = (sum(list_daisuu)+1)/len(list_daisuu) -1.3399080165
+                    if t in last_used_random:
+                        continue
+                    else:    
+                        last_used_random.append(t)
+                        print(f"エラー: list_daisuuのサイズ: {len(list_daisuu)}")
+                        print(f"アクセスしようとしたインデックス: {t}")
+                        print(f"アクセスしようとした値{list_daisuu[t]}")
+                        list_daisuu[t] += 1
+
+            simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,0,0,roop_number)#全員が正直申告したときの獲得利得
+
+            lier_FARMER = random.randint(0,FARMERS-1)
+
+            liers_truth = 1
+            liers_lie = 0
+            lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number)
+            
+
+            liers_truth = 2
+            liers_lie = 1
+            lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number)
+
+            liers_truth = 2
+            liers_lie = 0
+            lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number)
 
 
 
 
 
+            list_daisuu.clear         
+            for farm in range(FARMERS):
+                if farm <=FARMERS*(1-new_farmers_rate):
+                    list_daisuu.append(1)
+                else:
+                    list_daisuu.append(0)
+            gap = math.inf
+
+            
+            while ((sum(list_daisuu)+1)/len(list_daisuu) -1.33990801659)< gap:
+                list_daisuu[0] += 1
+                gap = (sum(list_daisuu)+1)/len(list_daisuu) -1.33990801659
+            while list_daisuu[0] > 0:
+                simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,list_daisuu[0],0,roop_number)
+                list_daisuu[0] -= 1
+
+
+
+
+
+
+def simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,liers_lie,lier_Farmer,roop_number):
+    data = []
+    data.append(COUNT)
+    data.append(roop_number)
+    data.append(lier_Farmer)
+    data.append(liers_lie)
+    
+
+    model_1 = gp.Model(name="Gurobi")
+    print("成功")
     # 決定変数の定義
     s = {}  # s_{i,d}
     c = {}  # c_{i,w}
@@ -295,7 +358,7 @@ def simulation(COUNT):
     z = {} #z_{w}
 
     #s_{i,d}とt_{i,d},c_{i,w}の設定
-    for idx in range(FARMS):
+    for idx in range(FARMERS):
         for d in range(D):
             t[idx, d] = model_1.addVar(vtype=gp.GRB.CONTINUOUS )  
             s[idx, d] = model_1.addVar(vtype=gp.GRB.INTEGER)
@@ -305,11 +368,6 @@ def simulation(COUNT):
     # ∏_(𝑑∈𝐷)〖|𝑤_𝑑−𝑃_𝑑 |〗の値を格納するz[w]の設定
     for w in range(2 ** D):
         z[w] = model_1.addVar(vtype=gp.GRB.CONTINUOUS)
-
-
-
-
-
 
     # Wの設定
     W = {}
@@ -336,9 +394,9 @@ def simulation(COUNT):
 
     # 目的関数設定
     objective_expr = k * gp.quicksum(
-        c[idx, w] * z[w] for idx in range(FARMS) for w in range(2 ** D)
+        c[idx, w] * z[w] for idx in range(FARMERS) for w in range(2 ** D)
     ) - gp.quicksum(
-        l * t[idx, d] for idx in range(FARMS) for d in range(D) 
+        l * t[idx, d] for idx in range(FARMERS) for d in range(D) 
     )
     model_1.setObjective(objective_expr, gp.GRB.MAXIMIZE)
 
@@ -352,14 +410,11 @@ def simulation(COUNT):
     #制約条件の設定
 
     op = 0
-    for idx in range(FARMS):
-        
-        #print("idxの数"+str(idx))
-        #print(i.b[idx])
+    for idx in range(FARMERS):
         for w in range(2 ** D):
             model_1.addConstr(c[idx, w] <=list_nouti[idx])
             model_1.addConstr(
-                c[idx, w] <= gp.quicksum(W[w, d] * s[idx, d] * list_kouyou[idx][d] * a for d in range(D))
+                c[idx, w] <= gp.quicksum(W[w, d] * s[idx, d] * list_kouyou[idx][d] * n for d in range(D))
             )
         for d in range(D):
             model_1.addConstr(s[idx, d] >= 0)
@@ -375,7 +430,7 @@ def simulation(COUNT):
 
     for d in range(D):
         model_1.addConstr(
-            gp.quicksum(s[idx, d] for idx in range(FARMS)) == gp.quicksum(list_daisuu[idx] for idx in range(FARMS))
+            gp.quicksum(s[idx, d] for idx in range(FARMERS)) == gp.quicksum(list_daisuu[idx] for idx in range(FARMERS))
         )
 
     # 最適化の実行
@@ -386,7 +441,7 @@ def simulation(COUNT):
     print("[解]")
     if model_1.Status == gp.GRB.OPTIMAL:
         print("    最適解: ")
-        for idx in range(FARMS):
+        for idx in range(FARMERS):
             for d in range(D):
                     print(f"        農家 {idx} が日 {d} に作業量 {s[idx, d].X}")
         val_opt = model_1.ObjVal
@@ -394,14 +449,20 @@ def simulation(COUNT):
     else:
         print("最適解が見つかりませんでした")
 
-    for idx in range(FARMS):
+    for idx in range(FARMERS):
         for d in range(D):
             print("ｓ"+str(s[idx,d]))
             print("最適値"+str(s[idx,d].X))
     
-
-    
-    
+    rieki = 0
+    for i in range(FARMERS):
+        for d in range(D):#獲得利益の計算
+            if random.random() < list_w_real[d]:
+                if list_daisuu[lier_Farmer] == liers_lie and idx == list_kouyou:
+                    rieki += (s[idx,d].X+list_daisuu[lier_Farmer]-liers_lie )*k*n*list_kouyou[i][d]-l*max(0,s[idx,d].X-liers_lie)
+                    continue
+            rieki += s[idx,d].X*k*n*list_kouyou[i][d]-l*max(0,s[idx,d].X-list_daisuu[idx])
+        
 
     print("農地面積:", list_nouti)
     print("農機台数:", list_daisuu)
@@ -410,19 +471,42 @@ def simulation(COUNT):
     print("全農家の支払額:"+str(shiharai_value))
 
     
+    
+
     result_value.append(val_opt)
     result_shiharai.append(shiharai_value)
+    data.append(val_opt)
+    data.append(shiharai_value)
+    data.append(val_opt-shiharai_value)
+    data.append(rieki)
 
-
+    body.append(data)
 
 
 def main():
-    for count in range(TEST):
-        simulation(count)
+    global result_value, result_shiharai
+    result_value = []  # リストの初期化
+    result_shiharai = []  # リストの初期化
     
-    for i in range(TEST):
-        print(result_value[i])
-        print(result_shiharai[i])
+    for count in range(TEST):
+        Hensuukettei(count)
+        print(f"Test {count + 1} completed")
+    
+    print("\n最終結果:")
+    for i in range(len(result_value)):
+        print(f"Test {i + 1}:")
+        print(f"  最適値: {result_value[i]}")
+        print(f"  支払額: {result_shiharai[i]}")
+    
+    with open('kekka.csv', 'w') as f:
+    
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(body)
+
+    f.close()
+    print("complete")
+
 
 if __name__ == "__main__":
    main()
