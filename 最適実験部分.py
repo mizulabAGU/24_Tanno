@@ -12,16 +12,16 @@ import csv
 
 TEST = 100                                             #実験の回数
 
-FARMERS = 150                                             #参加農家数
+FARMERS = 100                                             #参加農家数
 D= 7                                                    #期間日数
 
 #要修正
 # パラメータ設定（例: l, k, vなど）
-l = 155/3 #1台を移動させるのに必要なコスト20分
+l = 8.9355/3 #1台を移動させるのに必要なコスト20分
 k = (6.5+7.1)/2 #開墾した農地を金額に変換する
 n = 12000/14#農機1台が1日に耕せる面積
 
-header = ['回数','効用確率','新機就農者割合','虚偽申告農家','虚偽申告台数','期待売上','総利益','利益']#書き込みシートの行名
+header = ['回数','効用確率','新機就農者割合','虚偽申告農家','虚偽申告台数','真値申告台数','合計支払い金額','期待売上','期待総利益','利益']#書き込みシートの行名
 body=[]#書き込み内容
 
 
@@ -33,7 +33,13 @@ Area_average = 34000                                        #農地面積の平�
 Area_haba = 10000                                             #数値の根拠なし
 
 
+with open('kekka.csv', 'a') as f:
 
+    writer = csv.writer(f)
+    writer.writerow(header)
+
+
+f.close()
 
 
 
@@ -190,10 +196,10 @@ def Removei(z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou,h,d
 
 
 
-def lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number):
+def lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number,new_farmers_rate):
     while True:
                 if list_daisuu[lier_FARMER] == liers_truth:#もしliers_truth 台の農機台数の農家がいたらその人を嘘つきにする
-                    simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,liers_lie,lier_FARMER,roop_number)
+                    simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,liers_lie,liers_truth,lier_FARMER,roop_number,new_farmers_rate)
 
                     list_daisuu[lier_FARMER] = liers_truth
                     break
@@ -207,7 +213,6 @@ def shiharai(s,c,t,z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyo
         for h in range(FARMERS):
             q += (Removei( z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou,h,day)
                                    -sifromremove(s,t,list_w_real,list_kouyou,list_nouti,h,day)) 
-    print("process12")
     return q
 
 def random_number(average,haba):                               #農地面積、農機台数のランダム割当関数
@@ -236,15 +241,13 @@ def Hensuukettei(COUNT):#各配列値の詳細な設定
     list_w_real = []
     list_nouti = []
 
-    
-    
-    new_farmers_increaserate = 0.2#新規就農者の上昇率
+    new_farmers_increaserate = 0.3#新規就農者の上昇率
     new_farmers_rate = 0.0-new_farmers_increaserate#新規就農者の割合
     
     while(new_farmers_rate <= 1.0):
         new_farmers_rate += new_farmers_increaserate
         #農地面積のランダム割当
-        list_nouti.clear                                         #リスト農地の設定
+        list_nouti.clear()                                         #リスト農地の設定
         for farm in range(FARMERS):                                             
             list_nouti.append(random_number(Area_average,Area_haba))   #要修正  #農地平均からランダムで平均から+-300以内の値を割り当て
             i = 0
@@ -252,7 +255,7 @@ def Hensuukettei(COUNT):#各配列値の詳細な設定
         while(roop_number <= 100):
             #農家効用のランダム導出
             
-            list_kouyou.clear                                               # リスト効用の初期化
+            list_kouyou.clear()                                               # リスト効用の初期化
             for farm in range(FARMERS):
                 farm_schedule = []                                            # 各農家のスケジュールを格納するリスト
                 list_kouyou.append(Kouyou_Random(roop_number, farm_schedule))                              # 各農家のスケジュールをリストに追加
@@ -261,12 +264,12 @@ def Hensuukettei(COUNT):#各配列値の詳細な設定
 
 
             #天候の設定
-            list_tenkiyohou.clear
+            list_tenkiyohou.clear()
             for d in range(D):
                 list_tenkiyohou.append(random.random())
 
 
-            list_w_real.clear #0日目から|D|日目まで実際の天気
+            list_w_real.clear() #0日目から|D|日目まで実際の天気
             for d in range(D):
                 if random.random() < list_tenkiyohou[d]:
                     list_w_real.append(0)
@@ -275,7 +278,7 @@ def Hensuukettei(COUNT):#各配列値の詳細な設定
 
 
             #農機台数のランダム導出
-            list_daisuu.clear                                                  #リスト農機台数の設定
+            list_daisuu.clear()                                                  #リスト農機台数の設定
 
             for farm in range(FARMERS):
                 if farm <=FARMERS*(1-new_farmers_rate):    # まず全員に1台ずつ配分
@@ -299,28 +302,27 @@ def Hensuukettei(COUNT):#各配列値の詳細な設定
                         print(f"アクセスしようとした値{list_daisuu[t]}")
                         list_daisuu[t] += 1
 
-            simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,0,0,roop_number)#全員が正直申告したときの獲得利得
 
             lier_FARMER = random.randint(0,FARMERS-1)
 
             liers_truth = 1
             liers_lie = 0
-            lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number)
+            lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number,new_farmers_rate)
             
 
             liers_truth = 2
             liers_lie = 1
-            lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number)
+            lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number,new_farmers_rate)
 
             liers_truth = 2
             liers_lie = 0
-            lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number)
+            lier_simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,liers_truth,lier_FARMER,liers_lie,COUNT,roop_number,new_farmers_rate)
 
 
 
 
 
-            list_daisuu.clear         
+            list_daisuu.clear()         
             for farm in range(FARMERS):
                 if farm <=FARMERS*(1-new_farmers_rate):
                     list_daisuu.append(1)
@@ -328,26 +330,42 @@ def Hensuukettei(COUNT):#各配列値の詳細な設定
                     list_daisuu.append(0)
             gap = math.inf
 
-            
+            rich_FARMER = 0
+            list_rich_FARMER = []
+            list_rich_FARMER.append(rich_FARMER)
             while ((sum(list_daisuu)+1)/len(list_daisuu) -1.33990801659)< gap:
-                list_daisuu[0] += 1
+                if list_daisuu[rich_FARMER] > 6:
+                    rich_FARMER = random.randint(0,FARMERS-1)
+                    if rich_FARMER in list_rich_FARMER:
+                        continue
+                    list_rich_FARMER.append(rich_FARMER)
+
+                list_daisuu[rich_FARMER] += 1
+                
                 gap = (sum(list_daisuu)+1)/len(list_daisuu) -1.33990801659
+            liers_truth = list_daisuu[0]
             while list_daisuu[0] > 0:
-                simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,list_daisuu[0],0,roop_number)
+                liers_lie = list_daisuu[0]
+                simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,liers_lie,liers_truth,0,roop_number,new_farmers_rate)
                 list_daisuu[0] -= 1
 
 
-
-
-
-
-def simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,liers_lie,lier_Farmer,roop_number):
+def simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,COUNT,liers_lie,liers_truth,lier_Farmer,roop_number,new_farmers_rate):
     data = []
     data.append(COUNT)
     data.append(roop_number)
+    data.append(new_farmers_rate)
     data.append(lier_Farmer)
     data.append(liers_lie)
-    
+    data.append(liers_truth)
+
+
+    print("Checking input parameters:")
+    print(f"list_nouti length: {len(list_nouti)}")
+    print(f"list_daisuu length: {len(list_daisuu)}")
+    print(f"list_kouyou length: {len(list_kouyou)}")
+    print(f"list_tenkiyohou length: {len(list_tenkiyohou)}")
+    print(f"list_w_real length: {len(list_w_real)}")
 
     model_1 = gp.Model(name="Gurobi")
     print("成功")
@@ -467,11 +485,11 @@ def simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,CO
     print("農地面積:", list_nouti)
     print("農機台数:", list_daisuu)
     shiharai_value = (shiharai(s,c,t,z,list_w_real,list_kouyou,list_nouti,list_daisuu,list_tenkiyohou))
-    print("process17")
+    #print("process17")
     print("全農家の支払額:"+str(shiharai_value))
 
-    
-    
+
+
 
     result_value.append(val_opt)
     result_shiharai.append(shiharai_value)
@@ -481,6 +499,20 @@ def simulation(list_nouti,list_daisuu,list_kouyou,list_tenkiyohou,list_w_real,CO
     data.append(rieki)
 
     body.append(data)
+
+    with open('kekka.csv', 'a') as f:
+    
+        writer = csv.writer(f)
+        writer.writerows(body)
+    
+    
+    f.close()
+    for i in range(5):
+        print(f"\n")
+    print("complete")
+    for i in body:
+        print(i)
+    body.clear()
 
 
 def main():
