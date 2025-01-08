@@ -16,9 +16,9 @@ import matplotlib.font_manager as fm
 @dataclass
 class SimulationConfig:
     """シミュレーションの設定を保持するクラス"""
-    FARMERS: int = 30                                                    # 参加農家の数
+    FARMERS: int = 50                                                    # 参加農家の数
     DAYS: int = 7                                                        # 対象期間の日数
-    TESTS: int = 10                                                      # シミュレーション実験回数
+    TESTS: int = 30                                                       # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
     COST_CULTIVATION: float = (6.5+7.1)/2                                # 農地開墾を金額換算した値
     WORK_EFFICIENCY: float = 12000/14                                    # 農機1台が1日に耕せる面積
@@ -33,7 +33,7 @@ class SimulationConfig:
     NEW_FARMER_RATE_BEGIN: float = 0.00                                  # 新規就農者分析の初期割合
     NEW_FARMER_RATE_END: float = 0.21                                    # 新規就農者分析の最終割合
     NEW_FARMER_RATE_MIN: float = 0.0                                     # 新規就農者率の最小値
-    NEW_FARMER_RATE_RANGE: float = 3/30                                  # 新規就農者の増加率
+    NEW_FARMER_RATE_RANGE: float = 1/30                                  # 新規就農者の増加率
     NEW_FARMER_RATE_MAX: float = 0.21                                    # 新規就農者率の最大値
     WEATHER_RATE: float = 0.3                                            # 天気予報の確率
     THERE_IS_A_LIER: bool  = True                                        # 農家0が農機台数を虚偽申告するか否か
@@ -306,7 +306,8 @@ class FarmingOptimizer:
                             self.config.COST_MOVE * 
                             sum(vars['t'][i, d].X for d in range(self.config.DAYS)))
                 if i==0:
-                    Profit_lie[i] += sum(self.config.COST_CULTIVATION *self.config.WORK_EFFICIENCY*farms0_machine_count * actual_weather[d]*farms[0].utility[d] for d in range(self.config.DAYS))
+                    farmer0_profit_difference = sum(self.config.COST_CULTIVATION *self.config.WORK_EFFICIENCY*farms0_machine_count * actual_weather[d]*farms[0].utility[d] for d in range(self.config.DAYS))
+                    Profit_lie[i] = Profit_truth[i] + farmer0_profit_difference
                     if Profit_lie[i] > self.config.COST_CULTIVATION * farms[0].land_area:
                         Profit_lie[i] = self.config.COST_CULTIVATION * farms[0].land_area
             for i in range(self.config.FARMERS):
@@ -410,7 +411,8 @@ class FarmingOptimizer:
                 'profit_difference_farm0': profit_difference_farm0,
                 'social_surplus_difference': social_surplus_difference,
                 'total_payment_truth': total_payment_truth,
-                'total_payment_lie': total_payment_lie
+                'total_payment_lie': total_payment_lie,
+                'farmer0_profit_difference': farmer0_profit_difference
             }
             
             
@@ -537,7 +539,8 @@ class FarmingOptimizer:
             'profit_difference_farm0': 0.0,
             'social_surplus_difference': 0.0,
             'total_payment_truth': 0.0,
-            'total_payment_lie': 0.0
+            'total_payment_lie': 0.0,
+            'farmer0_profit_difference': 0.0
 
 
 
@@ -810,7 +813,37 @@ class FarmingSimulation:
         self._create_comparison_plot()
         self._create_objective_comparison_plot()
         self._create_payment_comparison_plot()
+        self._create_farmer0_profit_difference_plot()  # 新しいグラフ
         plt.show()
+
+    def _create_farmer0_profit_difference_plot(self):
+        """農家0の利得差異を新規就農者ごとに表示"""
+        rates = np.array([rate * 100 for rate in sorted(self.results.keys())])
+        profit_differences = []
+
+        # 各新規就農率に対するテスト結果から利得差異を収集
+        for rate, tests in self.results.items():
+            total_difference = 0
+            count = 0
+            for test in tests:
+                if 'profit_difference_farm0' in test:
+                    total_difference += test['profit_difference_farm0']
+                    count += 1
+            profit_differences.append(total_difference / count if count > 0 else 0)
+
+        # プロット
+        plt.figure(figsize=(12, 6))
+        plt.plot(rates, profit_differences, 'o-', color='blue', label='Profit Difference')
+        
+        # 各ポイントの値を表示
+        for i, rate in enumerate(rates):
+            plt.text(rate, profit_differences[i], f'{profit_differences[i]:.2f}', fontsize=9, ha='center', va='bottom', color='blue')
+
+        plt.title('Profit of farmer0 Difference for New Farmer Rate', fontsize=14, pad=20)
+        plt.xlabel('new farmer rate (%)')
+        plt.ylabel('profit difference')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.7)
 
     def _create_comparison_plot(self):
         """農家0の真値と虚偽申告時の目的関数の値を比較"""
@@ -835,9 +868,9 @@ class FarmingSimulation:
             plt.text(rate, objective_truth[i], f'{objective_truth[i]:.2f}', fontsize=9, ha='center', va='bottom', color='blue')
             plt.text(rate, objective_lie[i], f'{objective_lie[i]:.2f}', fontsize=9, ha='center', va='bottom', color='red')
 
-        plt.title('新規就農率に対する目的関数の値の比較', fontsize=14, pad=20)
-        plt.xlabel('新規就農者率 (%)')
-        plt.ylabel('目的関数の値')
+        plt.title('Comparison of Objective Function Values for New Farming Rates', fontsize=14, pad=20)
+        plt.xlabel('new farmer rate (%)')
+        plt.ylabel('objective function value')
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.7)
 
@@ -848,8 +881,8 @@ class FarmingSimulation:
         objective_lie = [self.summary[rate/100]['avg_objective_lie'] for rate in rates]
 
         plt.figure(figsize=(12, 6))
-        plt.plot(rates, objective_truth, 'o-', label='真値申告', color='blue')
-        plt.plot(rates, objective_lie, 'o-', label='虚偽申告', color='red')
+        plt.plot(rates, objective_truth, 'o-', label='Truthful Declaration', color='blue')
+        plt.plot(rates, objective_lie, 'o-', label='False Declaration', color='red')
         plt.fill_between(rates, 
                          [self.summary[r/100]['avg_objective_present'] - self.summary[r/100]['std_objective_present'] for r in rates],
                          [self.summary[r/100]['avg_objective_present'] + self.summary[r/100]['std_objective_present'] for r in rates],
@@ -864,9 +897,9 @@ class FarmingSimulation:
             plt.text(rate, objective_truth[i], f'{objective_truth[i]:.2f}', fontsize=9, ha='center', va='bottom', color='blue')
             plt.text(rate, objective_lie[i], f'{objective_lie[i]:.2f}', fontsize=9, ha='center', va='bottom', color='red')
 
-        plt.title('新規就農率に対する目的関数の値の比較', fontsize=14, pad=20)
-        plt.xlabel('新規就農者率 (%)')
-        plt.ylabel('目的関数の値')
+        plt.title('Comparison of Objective Function Values for New Farming Rates', fontsize=14, pad=20)
+        plt.xlabel('new farmer rate (%)')
+        plt.ylabel('objective function value')
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.7)
 
@@ -877,8 +910,8 @@ class FarmingSimulation:
         payment_lie = [self.summary[rate/100]['avg_total_payment_lie'] for rate in rates]
 
         plt.figure(figsize=(12, 6))
-        plt.plot(rates, payment_truth, 'o-', label='真値申告', color='green')
-        plt.plot(rates, payment_lie, 'o-', label='虚偽申告', color='orange')
+        plt.plot(rates, payment_truth, 'o-', label='Truthful Declaration', color='green')
+        plt.plot(rates, payment_lie, 'o-', label='False Declaration', color='orange')
         plt.fill_between(rates, 
                          [self.summary[r/100]['avg_total_payment_truth'] - self.summary[r/100]['std_total_payment_truth'] for r in rates],
                          [self.summary[r/100]['avg_total_payment_truth'] + self.summary[r/100]['std_total_payment_truth'] for r in rates],
