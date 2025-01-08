@@ -16,15 +16,15 @@ import matplotlib.font_manager as fm
 @dataclass
 class SimulationConfig:
     """シミュレーションの設定を保持するクラス"""
-    FARMERS: int = 5                                                    # 参加農家の数
+    FARMERS: int = 30                                                    # 参加農家の数
     DAYS: int = 7                                                        # 対象期間の日数
-    TESTS: int = 2                                                       # シミュレーション実験回数
+    TESTS: int = 10                                                      # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
     COST_CULTIVATION: float = (6.5+7.1)/2                                # 農地開墾を金額換算した値
     WORK_EFFICIENCY: float = 12000/14                                    # 農機1台が1日に耕せる面積
     AREA_AVERAGE: float = 34000.0                                        # 農地面積の平均値
     NEW_FARMER_AREA_AVERAGE: float = 27000.0                             # 新規就農者の農地面積の平均値
-    FARMER_UTILITY: float = 5/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
+    FARMER_UTILITY: float = 6/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
     AREA_RANGE: float = 10000.0                                          # 農地面積のばらつき幅
     NEW_FARMER_RATE_STEP: float = 0.2                                    # 新規就農者率のステップ
     UTILITY_START: int = 10                                              # 効用値の初期値
@@ -33,10 +33,10 @@ class SimulationConfig:
     NEW_FARMER_RATE_BEGIN: float = 0.00                                  # 新規就農者分析の初期割合
     NEW_FARMER_RATE_END: float = 0.21                                    # 新規就農者分析の最終割合
     NEW_FARMER_RATE_MIN: float = 0.0                                     # 新規就農者率の最小値
-    NEW_FARMER_RATE_RANGE: float = 0.01                                   # 新規就農者の増加率
+    NEW_FARMER_RATE_RANGE: float = 3/30                                  # 新規就農者の増加率
     NEW_FARMER_RATE_MAX: float = 0.21                                    # 新規就農者率の最大値
-    WEATHER_RATE: float = 0.3
-    THERE_IS_A_LIER: bool  = True                                              #農家0が農機台数を虚偽申告するか否か
+    WEATHER_RATE: float = 0.3                                            # 天気予報の確率
+    THERE_IS_A_LIER: bool  = True                                        # 農家0が農機台数を虚偽申告するか否か
 
 # カスタム例外
 class OptimizationError(Exception):
@@ -73,6 +73,7 @@ class Weather:
             for w_range in range(self.days):
                 W[d, w_range] = int(w_bin[w_range])
         return W
+
 
 class Farm:
     """農家クラス"""
@@ -147,9 +148,6 @@ class lier_Farm(Farm):
         self.utility: List[int] = []
 
 
-
-
-
 class FarmingOptimizer:
     """最適化クラス"""
     def __init__(self, config: SimulationConfig):
@@ -160,36 +158,269 @@ class FarmingOptimizer:
     def reset_model(self):
         """最適化モデルのリセット"""
         self.model = gp.Model("FarmingOptimization")
+        self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
         self.model.setParam('LogToConsole', 0)
         self.model.setParam('TimeLimit', 30000)
         self.model.setParam('MIPGap', 0.1)
-    
 
-        
+
+    def _calculate_Removei(self, farms: List[Farm], weather_forecast: List[float], 
+                actual_weather: List[int], W, Calculate_FARMER0_profit: bool,h:int) -> float:
+        """農家hが存在しない社会での社会的余剰の計算"""
+        profit_FARMER_noti_social = 0
+        farmsi_machine_count =0
+        farmsi_land_area = 0
+    
+        farmsi_machine_count = farms[h].machine_count 
+        farmsi_land_area = farms[h].land_area 
+        farms[h].machine_count =0
+        farms[h].land_area = 0
+        self.reset_model()
+        self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
+        vars = self.create_variables()#変数の作成
+        self.set_constraints(vars, farms, weather_forecast)#制約の設定
+        self.set_objective(vars, farms)#目的関数の設定
+        self.model.optimize()#最適化の実行
+        farms[h].machine_count = farmsi_machine_count
+        farms[h].land_area = farmsi_land_area
+        if self.model.status == gp.GRB.OPTIMAL:
+            return self.model.ObjVal
+        else:
+            raise OptimizationError(f"Removeiにおいて最適化失敗 (Status: {self.model.Status})")
 
     def optimize(self, farms: List[Farm], weather_forecast: List[float], 
-                actual_weather: List[int], W) -> Dict:
-        """最適化の実行"""
+                actual_weather: List[int], W, Calculate_FARMER0_profit: bool) -> Dict:
+        """最適化の実行とVCGオークションによる支払金額の計算"""
+        Farmer_payments_truth = []
+        Farmer_payments_lie = []
+        Profit_truth = []
+        Profit_FARMER0_lie = []
+        Social_surplus_truth = 0
+        Social_surplus_lie = 0
+        Farmer_payments = []
+        Farmer_profit = []
         try:
+            
+            # メインの最適化モデルをリセットし、設定を行う
             self.reset_model()
+            self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
+            vars = self.create_variables()  # 変数の作成
+            self.set_constraints(vars, farms, weather_forecast)  # 制約の設定
+            self.set_objective(vars, farms)  # 目的関数の設定
+            self.model.optimize()  # 最適化の実行
+            
+            # 最適化が成功したか確認
+            if self.model.status != gp.GRB.OPTIMAL:
+                raise OptimizationError(f"最適化に失敗しました。ステータス: {self.model.status}")
+            Profit=[]
+            for i in range(self.config.FARMERS):
+                Profit.append(self.config.COST_CULTIVATION * 
+                            sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2 ** self.config.DAYS)) -
+                            self.config.COST_MOVE * 
+                            sum(vars['t'][i, d].X for d in range(self.config.DAYS)))
+
+            print(f"最適化成功。現在の目的関数値: { self.model.ObjVal}")
+            Obj_present = self.model.ObjVal  # 正直に申告したときの目的関数の値
+            results = self.get_results(vars, farms, actual_weather, weather_forecast, W)
+            Profit_present = []
+            for i in range(self.config.FARMERS):
+                Profit_present.append(self.config.COST_CULTIVATION * 
+                            sum(vars['c'][h, w].X * vars['z'][w].X for h in range(self.config.FARMERS) if h != i for w in range(2 ** self.config.DAYS)) -
+                            self.config.COST_MOVE * 
+                            sum(vars['t'][h, d].X for h in range(self.config.FARMERS) if h != i for d in range(self.config.DAYS)))
+            # 各農家の支払金額を計算
+            for i in range(self.config.FARMERS):
+                
+                Profit_absent = []
+                print(f"\n農家{i}の支払金額を計算中...")
+                
+                # 農家iを除外した新しい農家リストを作成
+                farmi_machine_count = farms[i].machine_count
+                farmi_land_area = farms[i].land_area
+                farms[i].machine_count = 0
+                farms[i].land_area = 0
+                #farms_without_i = [farm for farm in farms if farm.id != i]
+                
+                # 農家iを除外した最適化モデルを設定
+                self.reset_model()
+                self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
+                vars_removed = self.create_variables()  # 変数の作成
+                self.set_constraints(vars_removed, farms, weather_forecast)  # 制約の設定
+                self.set_objective(vars_removed, farms)  # 目的関数の設定
+                self.model.optimize()  # 最適化の実行
+                
+                # 最適化が成功したか確認
+                if self.model.status != gp.GRB.OPTIMAL:
+                    raise OptimizationError(f"農家{i}を除外した最適化に失敗しました。ステータス: {self.model.status}")
+                
+                Obj_absent = self.model.ObjVal  # 農家iを除外した場合の目的関数の値
+                #print(f"農家{i}を除外した場合の目的関数値: {Obj_absent}")
+                
+                # VCG支払金額の計算
+                payment_i = Obj_absent - Profit_present[i]
+                Farmer_payments.append(payment_i)
+                print(f"農家{i}の利益: {Profit[i]}")
+                print(f"農家{i}の支払額: {payment_i}")
+                Farmer_profit.append(Profit[i]+payment_i)
+                print(f"農家{i}の利得: {Profit[i]+payment_i}")
+                farms[i].machine_count = farmi_machine_count
+                farms[i].land_area = farmi_land_area
+                Farmer_payments_truth.append(payment_i)
+                Profit_truth.append(Profit[i]+payment_i)
+                Social_surplus_truth += Profit[i]+payment_i
+
+            
+            
+            # 支払金額の総和を計算
+            """全農家の支払額を計算"""
+            total_payment = sum(Farmer_payments)
+            print(f"\n全農家の総支払額: {total_payment}")
+            print(f"全農家の利得(社会的余剰): {sum(Farmer_profit)}")
+
+
+
+
+            """農家0が嘘をついたときの獲得利益"""
+            farms0_machine_count = farms[0].machine_count
+            farms[0].machine_count = 0
+            self.reset_model()
+            self.model.setParam('TimeLimit', 600)  # 時間制限を10分に設定
+            self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
+            self.model.setParam('NodefileStart', 0.5)
             vars = self.create_variables()#変数の作成
             self.set_constraints(vars, farms, weather_forecast)#制約の設定
             self.set_objective(vars, farms)#目的関数の設定
-            
             self.model.optimize()#最適化の実行
+
+            if self.model.status != gp.GRB.OPTIMAL:
+                print("モデルは実行不可能です。診断情報を生成します。")
+                self.model.computeIIS()
+                self.model.write("model.ilp")
+                print("診断情報が 'model.ilp' に保存されました。")
+                raise OptimizationError(f"農家0が嘘をついたときの最適化に失敗しました。ステータス: {self.model.status}")
+            Profit_lie=[]
+            Profit_lie1 = []#農家i以外の獲得利益
+            for i in range(self.config.FARMERS):
+                Profit_lie.append(self.config.COST_CULTIVATION * 
+                            sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2 ** self.config.DAYS)) -
+                            self.config.COST_MOVE * 
+                            sum(vars['t'][i, d].X for d in range(self.config.DAYS)))
+                if i==0:
+                    Profit_lie[i] += sum(self.config.COST_CULTIVATION *self.config.WORK_EFFICIENCY*farms0_machine_count * actual_weather[d]*farms[0].utility[d] for d in range(self.config.DAYS))
+                    if Profit_lie[i] > self.config.COST_CULTIVATION * farms[0].land_area:
+                        Profit_lie[i] = self.config.COST_CULTIVATION * farms[0].land_area
+            for i in range(self.config.FARMERS):
+                Profit_lie1.append(self.config.COST_CULTIVATION * 
+                            sum(vars['c'][i, w].X * vars['z'][w].X for i in range(self.config.FARMERS) if i != 0 for w in range(2 ** self.config.DAYS)) -
+                            self.config.COST_MOVE * 
+                            sum(vars['t'][i, d].X for i in range(self.config.FARMERS) if i != 0 for d in range(self.config.DAYS)))
+            print("-----------農家oがうそをついたとき------------------------")
+            Obj_lie = self.model.ObjVal  # 農家0が嘘をついたときの目的関数の値
+            print(f"最適化成功。現在の目的関数値: {Obj_present}")
+            #print(f"農家0の利得(嘘をついたとき): {Profit_lie[0]}")
+
+
+            Farmer_payment_inlier =[]
+            Farmer_profit1 = []
+            """農家0が嘘をついたときの支払額の計算"""
+            # 各農家の支払金額を計算
+            for i in range(self.config.FARMERS):
+                
+                Profit_absent = []
+                print(f"\n農家0が嘘をついたときの農家{i}の支払金額を計算中...")
+                
+                # 農家iを除外した新しい農家リストを作成
+                farmi_machine_count = farms[i].machine_count
+                farmi_land_area = farms[i].land_area
+                farms[i].machine_count = 0
+                farms[i].land_area = 0
+                #farms_without_i = [farm for farm in farms if farm.id != i]
+                
+                # 農家iを除外した最適化モデルを設定
+                self.reset_model()
+                self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
+                vars_removed = self.create_variables()  # 変数の作成
+                self.set_constraints(vars_removed, farms, weather_forecast)  # 制約の設定
+                self.set_objective(vars_removed, farms)  # 目的関数の設定
+                self.model.optimize()  # 最適化の実行
+                
+                # 最適化が成功したか確認
+                if self.model.status != gp.GRB.OPTIMAL:
+                    raise OptimizationError(f"農家0が嘘をついたときの農家{i}を除外した最適化に失敗しました。ステータス: {self.model.status}")
+                
+                Obj_absent = self.model.ObjVal  # 農家iを除外した場合の目的関数の値
+                #print(f"農家0が嘘をついたときの農家{i}を除外した場合の目的関数値: {Obj_absent}")
+                
+                # VCG支払金額の計算
+                payment_i = Obj_absent - Profit_lie1[i]
+                Farmer_payment_inlier.append(payment_i)
+                print(f"農家{i}の利益: {Profit_lie[i]}")
+                print(f"農家{i}の支払額: {payment_i}")
+                Farmer_profit1.append(Profit_lie[i]+payment_i)
+                print(f"農家{i}の利得: {Profit_lie[i]+payment_i}")
+                farms[i].machine_count = farmi_machine_count
+                farms[i].land_area = farmi_land_area
+                Farmer_payments_lie.append(payment_i)
+                Profit_FARMER0_lie.append(Profit_lie[i]+payment_i)
+                Social_surplus_lie += Profit_lie1[i]+payment_i
             
-            if self.model.Status == gp.GRB.OPTIMAL:#最適解が得られた場合、get_resultsメソッドを呼び出して解を生成し、返す
-                return self.get_results(vars, farms, actual_weather,weather_forecast, W)
-            elif self.model.Status == gp.GRB.TIME_LIMIT:
-                print(f"警告: 時間制限到達 (Gap: {self.model.MIPGap})")#時間制限に到達した場合、現時点での最良解をget_resultsメソッドを通じて返す
-                return self.get_results(vars, farms, actual_weather,weather_forecast, W)
-            else:#モデルが異常終了した場合は、OptimizationErrorをスローする
-                raise OptimizationError(f"最適化失敗 (Status: {self.model.Status})")
-        except Exception as e:#何らかの例外が発生した場合、エラーメッセージを表示し、OptimizationErrorをスローする
+            # 支払金額の総和を計算
+            """全農家の支払額を計算"""
+            total_payment = sum(Farmer_payments)
+            print(f"\n全農家の総支払額: {total_payment}")
+            print(f"全農家の利得(社会的余剰): {sum(Farmer_profit)}")
+
+
+            # 支払金額の総和を計算
+            """農家0が嘘をついたとき全農家の支払額を計算"""
+            total_payment = sum(Farmer_payment_inlier)
+            print(f"\n全農家の総支払額: {total_payment}")
+            print(f"全農家の利得(社会的余剰): {sum(Farmer_profit1)}")
+
+
+            #raise OptimizationError(f"農家0が嘘をついたときの最適化に失敗しました。ステータス: {self.model.status}")
+            #farms[0].land_area = farms0_land_area
+            farms[0].machine_count = farms0_machine_count
+
+
+
+            # 結果を辞書としてまとめる
+            
+            print("-----------------------------------")
+            print("-----------------------------------")
+            # results['objective_present'] = Obj_present
+            # results['Farmer_payments'] = Farmer_payments
+            # results['total_payment'] = total_payment
+            # #results['total_payment_inlier'] = total_payment_inlier
+            # results['Farmer_profit'] = Farmer_profit
+            # results['Farmer_profit1'] = Farmer_profit1
+            profit_difference_farm0 = Profit_truth[0] - Profit_lie[0]
+            social_surplus_difference = Social_surplus_truth - Social_surplus_lie
+            total_payment_lie = sum(Farmer_payments_lie)
+            total_payment_truth = sum(Farmer_payments_truth)
+
+
+            results = {
+                'objective_present': Obj_present,
+                'objective_lie': Obj_lie,
+                'Farmer_payments_truth': Farmer_payments_truth,
+                'Farmer_payments_lie': Farmer_payments_lie,
+                'Profit_truth': Profit_truth,
+                'Profit_lie': Profit_FARMER0_lie,
+                'profit_difference_farm0': profit_difference_farm0,
+                'social_surplus_difference': social_surplus_difference,
+                'total_payment_truth': total_payment_truth,
+                'total_payment_lie': total_payment_lie
+            }
+            
+            
+            
+            return results
+        
+        except Exception as e:
             print(f"最適化エラー: {str(e)}")
             raise OptimizationError(str(e))
-        
-        
+
     def create_variables(self) -> Dict:
         """最適化変数の作成"""
         vars = {
@@ -202,15 +433,12 @@ class FarmingOptimizer:
             for d in range(self.config.DAYS):
                 vars['s'][i, d] = self.model.addVar(vtype=gp.GRB.INTEGER)
                 vars['t'][i, d] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
-                
             for w in range(2 ** self.config.DAYS):
                 vars['c'][i, w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
 
         for w in range(2 ** self.config.DAYS):
             vars['z'][w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
-
         #print("vars:", vars)  # varsの内容を出力
-
         return vars
 
     def set_constraints(self, vars: Dict, farms: List[Farm], weather_forecast: List[float]):
@@ -263,6 +491,7 @@ class FarmingOptimizer:
         )
         self.model.setObjective(objective, gp.GRB.MAXIMIZE)
 
+
         
     
 
@@ -292,24 +521,40 @@ class FarmingOptimizer:
         results = {
             'objective_value': self.model.ObjVal,
             'farm_results': [],
-            'total_payment': self._calculate_payment(vars, farms, actual_weather)
+            'total_payment_present': 0.0,
+            'total_payment_inlier': 0.0,
+            'payment_FARMER0': 0.0,
+            'payment_FARMER0_inlier': 0.0,
+            'profit_difference': 0.0,  # 初期値
+            'social_surplus_difference': 0.0,  # 社会的余剰の差分初期値
+            'profit_FARMER0': 0.0 ,#農家0の利益初期値
+            'objective_present': 0.0,
+            'objective_lie': 0.0,
+            'Farmer_payments_truth': [],
+            'Farmer_payments_lie': [],
+            'Profit_truth': [],
+            'Profit_lie': [],
+            'profit_difference_farm0': 0.0,
+            'social_surplus_difference': 0.0,
+            'total_payment_truth': 0.0,
+            'total_payment_lie': 0.0
+
+
+
         }
         
+        
         for i in range(self.config.FARMERS):
-            farm0_profit_TRUE = self.config.COST_CULTIVATION * gp.quicksum(vars['c'][0, w] * vars['z'][w] 
-                       for w in range(2 ** self.config.DAYS))- self.config.COST_MOVE * gp.quicksum(vars['t'][0, d] 
-                       for d in range(self.config.DAYS))
-            #farm0_profit_FALSE = self._analyze_profit_of_FARMER0(farms,weather_forecast)
-            print(farm0_profit_TRUE)
             farm_result = {
                 'farm_id': i,
                 'work_schedule': {d: vars['s'][i, d].X for d in range(self.config.DAYS)},
-                'transfers': {d: vars['t'][i, d].X for d in range(self.config.DAYS)},
-                'capacity': {w: vars['c'][i, w].X for w in range(2 ** self.config.DAYS)}}
-            
+                'transfers': {d: vars['t'][i, d].X for d in range(self.config.DAYS)},#トラクターの移動回数
+                'capacity': {w: vars['c'][i, w].X for w in range(2 ** self.config.DAYS)}#農家iの耕せた面積
+            }
             results['farm_results'].append(farm_result)
-        results
+        
         return results
+    
     def _calculate_weather_probability(self, w: int, forecast: List[float], W: Dict) -> float:
         """制約条件式 Π_{d∈D}|w_d-P_d|の設定"""
         prod = 1.0
@@ -319,62 +564,6 @@ class FarmingOptimizer:
                 continue
             prod *= diff
         return prod
-
-    #def _calculate_payment(self, vars: Dict, farms: List[Farm], actual_weather: List[int]) -> float:
-    #    """支払額の計算"""
-    #    total_payment = 0
-    #    for i in range(self.config.FARMERS):
-    #        farm_payment = 0
-    #        for d in range(self.config.DAYS):
-    #            if actual_weather[d] == 1:
-    #                work_done = vars['s'][i, d].X * farms[i].utility[d]
-    #                farm_payment += self.config.COST_CULTIVATION * min(
-    #                    work_done,
-    #                    farms[i].land_area
-    #                )
-    #                farm_payment -= self.config.COST_MOVE * vars['t'][i, d].X
-    #        total_payment += farm_payment
-    #    return total_payment
-
-    def _optimize(self, farms: List[Farm]) -> Dict:
-        """最適化の実行"""
-        model = gp.Model("FarmOptimization")
-        
-        # 変数の定義
-        machine_vars = model.addVars(len(farms), vtype=gp.GRB.INTEGER, name="machines")
-        
-        # 目的関数の設定
-        model.setObjective(gp.quicksum(machine_vars[i] for i in range(len(farms))), gp.GRB.MAXIMIZE)
-        
-        # 制約条件の設定
-        for i, farm in enumerate(farms):
-            model.addConstr(machine_vars[i] <= farm.land_area / self.config.WORK_EFFICIENCY, 
-                            name=f"machine_limit_{i}")
-        
-        # 最適化の実行
-        model.optimize()
-        if model.status == gp.GRB.OPTIMAL:
-            print("モデルは最適化されました。")
-        elif model.status == gp.GRB.INFEASIBLE:
-            print("モデルは実行不可能です。")
-        elif model.status == gp.GRB.UNBOUNDED:
-            print("モデルは非有界です。")
-        elif model.status == gp.GRB.INTERRUPTED:
-            print("最適化が中断されました。")
-        else:
-            print(f"モデルのステータス: {model.status}")
-
-        
-        # 結果の取得
-        if model.status == gp.GRB.OPTIMAL:
-            total_machines = sum(machine_vars[i].X for i in range(len(farms)))
-            total_payment = total_machines * self.config.COST_MOVE
-            return {
-                'objective_value': total_machines,
-                'total_payment': total_payment
-            }
-        else:
-            raise OptimizationError("最適化に失敗しました。")
     def _calculate_payment(self, vars: Dict, farms: List[Farm], actual_weather: List[int]) -> float:
             """支払額の計算"""
             total_payment = 0
@@ -442,10 +631,38 @@ class FarmingSimulation:
         self._analyze_results()
         self._print_summary()
         self.visualize_results()  # 可視化を追加
-    
+        self.visualize_tractor_transfers()
 
 
-        
+    def visualize_tractor_transfers(self):
+        """新規就農者ごとのトラクター移動回数を可視化"""
+        if not self.results:
+            print("可視化するデータがありません")
+            return
+
+        # データを整形
+        transfer_data = []
+        for rate, tests in self.results.items():
+            for test in tests:
+                for farm_result in test['farm_results']:
+                    if farm_result['farm_id'] == 0:  # 新規就農者のIDが0であると仮定
+                        transfers = sum(farm_result['transfers'].values())
+                        transfer_data.append({
+                            'rate': rate,
+                            'transfers': transfers
+                        })
+
+        # DataFrameに変換
+        df = pd.DataFrame(transfer_data)
+
+        # プロット
+        plt.figure(figsize=(10, 6))
+        sns.boxplot(x='rate', y='transfers', data=df)
+        plt.title('Tractor Transfers by New Farmer Rate')
+        plt.xlabel('New Farmer Rate')
+        plt.ylabel('Total Transfers')
+        plt.show()
+
     def _run_all_rates(self):
         """全ての新規就農者率でシミュレーションを実行"""
         for new_farmer_rate in self._generate_rate_range():
@@ -482,18 +699,6 @@ class FarmingSimulation:
             except Exception as e:
                 print(f"最適化エラー: {e}")
 
-    #def _run_test(self, new_farmer_rate: float):
-    #    """単一テストを実行"""
-    #    farms = self._initialize_farms(new_farmer_rate)
-    #    actual_new_rate = self._calculate_actual_rate(farms)
-        
-    #    weather_data = self._generate_weather()
-        
-    #    try:
-    #        result = self._optimize_and_record(farms, weather_data, actual_new_rate)
-    #        self.results[new_farmer_rate].append(result)
-    #    except OptimizationError as e:
-    #        print(f"最適化エラー: {e}")
 
     def _initialize_farms(self, new_farmer_rate: float) -> List[Farm]:
         """農家リストを初期化"""
@@ -511,8 +716,7 @@ class FarmingSimulation:
         for farm in farms:
                 if farm.is_new:
                     new_farmers+=1
-            
-        #new_farmers = sum(1 for farm in farms if farm.machine_count == 0)
+        
         return new_farmers / len(farms)
 
     def _generate_weather(self) -> Dict:
@@ -526,13 +730,16 @@ class FarmingSimulation:
     def _optimize_and_record(self, farms: List[Farm], weather_data: Dict, 
                            actual_rate: float) -> Dict:########################################################
         """最適化を実行し結果を記録"""
+        Calculate_FARMER0_profit: bool = False
         W = self.weather_pattern.generate_weather_patterns()
         result = self.optimizer.optimize(
             farms, 
             weather_data['forecast'], 
             weather_data['actual'],
-            W
+            W,
+            Calculate_FARMER0_profit
         )
+        Calculate_FARMER0_profit = True
         result['actual_new_rate'] = actual_rate
         return result
 
@@ -548,23 +755,45 @@ class FarmingSimulation:
     def _calculate_statistics(self, tests: List[Dict]) -> Dict:
         """テスト結果の統計を計算"""
         values = {
-            'objective_values': [
-                test['objective_value'].getValue() if isinstance(test['objective_value'], gp.LinExpr) else test['objective_value']
-                for test in tests
-            ],
-            'payments': [
-                test['total_payment'].x if isinstance(test['total_payment'], gp.Var) and hasattr(test['total_payment'], 'x') else
-                (test['total_payment'].getValue() if isinstance(test['total_payment'], gp.LinExpr) else test['total_payment'])
-                for test in tests
-            ],
-            'actual_rates': [test['actual_new_rate'] for test in tests]
+            'objective_present': [test['objective_present'] for test in tests],
+            'objective_lie': [test['objective_lie'] for test in tests],
+            'Farmer_payments_truth': [test['Farmer_payments_truth'] for test in tests],
+            'Farmer_payments_lie': [test['Farmer_payments_lie'] for test in tests],
+            'Profit_truth': [test['Profit_truth'] for test in tests],
+            'Profit_lie': [test['Profit_lie'] for test in tests],
+            'profit_difference_farm0': [test['profit_difference_farm0'] for test in tests],
+            'social_surplus_difference': [test['social_surplus_difference'] for test in tests],
+            'total_payment_truth': [test['total_payment_truth'] for test in tests],
+            'total_payment_lie': [test['total_payment_lie'] for test in tests]
         }
+
+        # 農家0の平均利得を計算
+        avg_profit_FARMER0 = np.mean([profit[0] for profit in values['Profit_truth']])
+        avg_profit_FARMER0_inlier = np.mean([profit[0] for profit in values['Profit_lie']])
+
         return {
-            'avg_objective': np.mean(values['objective_values']),
-            'std_objective': np.std(values['objective_values']),
-            'avg_payment': np.mean(values['payments']),
-            'std_payment': np.std(values['payments']),
-            'actual_rate': np.mean(values['actual_rates'])
+            'avg_objective_present': np.mean(values['objective_present']),
+            'std_objective_present': np.std(values['objective_present']),
+            'avg_objective_lie': np.mean(values['objective_lie']),
+            'std_objective_lie': np.std(values['objective_lie']),
+            'avg_payment_truth': np.mean(values['Farmer_payments_truth']),
+            'std_payment_truth': np.std(values['Farmer_payments_truth']),
+            'avg_payment_lie': np.mean(values['Farmer_payments_lie']),
+            'std_payment_lie': np.std(values['Farmer_payments_lie']),
+            'avg_profit_truth': np.mean(values['Profit_truth']),
+            'std_profit_truth': np.std(values['Profit_truth']),
+            'avg_profit_lie': np.mean(values['Profit_lie']),
+            'std_profit_lie': np.std(values['Profit_lie']),
+            'avg_profit_difference_farm0': np.mean(values['profit_difference_farm0']),
+            'std_profit_difference_farm0': np.std(values['profit_difference_farm0']),
+            'avg_social_surplus_difference': np.mean(values['social_surplus_difference']),
+            'std_social_surplus_difference': np.std(values['social_surplus_difference']),
+            'avg_total_payment_truth': np.mean(values['total_payment_truth']),
+            'std_total_payment_truth': np.std(values['total_payment_truth']),
+            'avg_total_payment_lie': np.mean(values['total_payment_lie']),
+            'std_total_payment_lie': np.std(values['total_payment_lie']),
+            'avg_profit_FARMER0': avg_profit_FARMER0,  # ここで追加
+            'avg_profit_FARMER0_inlier': avg_profit_FARMER0_inlier
         }
 
     def visualize_results(self):
@@ -575,9 +804,99 @@ class FarmingSimulation:
 
         self._setup_plot_style()
         self._create_main_plots()
-        self._create_correlation_plot()
-        self._create_distribution_plot()
+        self._create_correlation_plot_present()
+        self._create_distribution_plot_present()
+        self._create_difference_plots_present()
+        self._create_comparison_plot()
+        self._create_objective_comparison_plot()
+        self._create_payment_comparison_plot()
         plt.show()
+
+    def _create_comparison_plot(self):
+        """農家0の真値と虚偽申告時の目的関数の値を比較"""
+        rates = np.array([rate * 100 for rate in sorted(self.summary.keys())])
+        objective_truth = [self.summary[rate/100]['avg_objective_present'] for rate in rates]
+        objective_lie = [self.summary[rate/100]['avg_objective_lie'] for rate in rates]
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(rates, objective_truth, 'o-', label='真値申告', color='blue')
+        plt.plot(rates, objective_lie, 'o-', label='虚偽申告', color='red')
+        plt.fill_between(rates, 
+                         [self.summary[r/100]['avg_objective_present'] - self.summary[r/100]['std_objective_present'] for r in rates],
+                         [self.summary[r/100]['avg_objective_present'] + self.summary[r/100]['std_objective_present'] for r in rates],
+                         alpha=0.2, color='blue')
+        plt.fill_between(rates, 
+                         [self.summary[r/100]['avg_objective_lie'] - self.summary[r/100]['std_objective_lie'] for r in rates],
+                         [self.summary[r/100]['avg_objective_lie'] + self.summary[r/100]['std_objective_lie'] for r in rates],
+                         alpha=0.2, color='red')
+        
+        # 各ポイントの値を表示
+        for i, rate in enumerate(rates):
+            plt.text(rate, objective_truth[i], f'{objective_truth[i]:.2f}', fontsize=9, ha='center', va='bottom', color='blue')
+            plt.text(rate, objective_lie[i], f'{objective_lie[i]:.2f}', fontsize=9, ha='center', va='bottom', color='red')
+
+        plt.title('新規就農率に対する目的関数の値の比較', fontsize=14, pad=20)
+        plt.xlabel('新規就農者率 (%)')
+        plt.ylabel('目的関数の値')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.7)
+
+    def _create_objective_comparison_plot(self):
+        """農家0の真値と虚偽申告時の目的関数の値を比較"""
+        rates = np.array([rate * 100 for rate in sorted(self.summary.keys())])
+        objective_truth = [self.summary[rate/100]['avg_objective_present'] for rate in rates]
+        objective_lie = [self.summary[rate/100]['avg_objective_lie'] for rate in rates]
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(rates, objective_truth, 'o-', label='真値申告', color='blue')
+        plt.plot(rates, objective_lie, 'o-', label='虚偽申告', color='red')
+        plt.fill_between(rates, 
+                         [self.summary[r/100]['avg_objective_present'] - self.summary[r/100]['std_objective_present'] for r in rates],
+                         [self.summary[r/100]['avg_objective_present'] + self.summary[r/100]['std_objective_present'] for r in rates],
+                         alpha=0.2, color='blue')
+        plt.fill_between(rates, 
+                         [self.summary[r/100]['avg_objective_lie'] - self.summary[r/100]['std_objective_lie'] for r in rates],
+                         [self.summary[r/100]['avg_objective_lie'] + self.summary[r/100]['std_objective_lie'] for r in rates],
+                         alpha=0.2, color='red')
+        
+        # 各ポイントの値を表示
+        for i, rate in enumerate(rates):
+            plt.text(rate, objective_truth[i], f'{objective_truth[i]:.2f}', fontsize=9, ha='center', va='bottom', color='blue')
+            plt.text(rate, objective_lie[i], f'{objective_lie[i]:.2f}', fontsize=9, ha='center', va='bottom', color='red')
+
+        plt.title('新規就農率に対する目的関数の値の比較', fontsize=14, pad=20)
+        plt.xlabel('新規就農者率 (%)')
+        plt.ylabel('目的関数の値')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.7)
+
+    def _create_payment_comparison_plot(self):
+        """農家0の真値と虚偽申告時の支払額の合計を比較"""
+        rates = np.array([rate * 100 for rate in sorted(self.summary.keys())])
+        payment_truth = [self.summary[rate/100]['avg_total_payment_truth'] for rate in rates]
+        payment_lie = [self.summary[rate/100]['avg_total_payment_lie'] for rate in rates]
+
+        plt.figure(figsize=(12, 6))
+        plt.plot(rates, payment_truth, 'o-', label='真値申告', color='green')
+        plt.plot(rates, payment_lie, 'o-', label='虚偽申告', color='orange')
+        plt.fill_between(rates, 
+                         [self.summary[r/100]['avg_total_payment_truth'] - self.summary[r/100]['std_total_payment_truth'] for r in rates],
+                         [self.summary[r/100]['avg_total_payment_truth'] + self.summary[r/100]['std_total_payment_truth'] for r in rates],
+                         alpha=0.2, color='green')
+        plt.fill_between(rates, 
+                         [self.summary[r/100]['avg_total_payment_lie'] - self.summary[r/100]['std_total_payment_lie'] for r in rates],
+                         [self.summary[r/100]['avg_total_payment_lie'] + self.summary[r/100]['std_total_payment_lie'] for r in rates],
+                         alpha=0.2, color='orange')
+        # 各ポイントの値を表示
+        for i, rate in enumerate(rates):
+            plt.text(rate, payment_truth[i], f'{payment_truth[i]:.2f}', fontsize=9, ha='center', va='bottom', color='green')
+            plt.text(rate, payment_lie[i], f'{payment_lie[i]:.2f}', fontsize=9, ha='center', va='bottom', color='orange')
+
+        plt.title('Comparison of Total Payments to New Farmer Percentage', fontsize=14, pad=20)
+        plt.xlabel('Percentage of new farmers (%)')
+        plt.ylabel('Total Amount Paid')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.7)
 
     def _setup_plot_style(self):
         """プロットスタイルの設定"""
@@ -588,60 +907,86 @@ class FarmingSimulation:
     def _create_main_plots(self):
         """主要な指標のプロット作成"""
         rates = np.array([rate * 100 for rate in sorted(self.summary.keys())])
-        objectives = [self.summary[rate/100]['avg_objective'] for rate in rates]
-        payments = [self.summary[rate/100]['avg_payment'] for rate in rates]
+        objectives = [self.summary[rate/100]['avg_objective_present'] for rate in rates]
+        payments = [self.summary[rate/100]['avg_payment_truth'] for rate in rates]
         
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
         
-        self._plot_objective_function(ax1, rates, objectives)
-        self._plot_payments(ax2, rates, payments)
+        self._plot_objective_function_present(ax1, rates, objectives)
+        self._plot_payments_present(ax2, rates, payments)
+        #self._plot_objective_function_lie(ax2, rates, objectives)
+
         
         plt.tight_layout()
 
-    def _plot_objective_function(self, ax: plt.Axes, rates: np.ndarray, 
+    def _plot_objective_function_present(self, ax: plt.Axes, rates: np.ndarray, 
                                objectives: List[float]):
         """目的関数の推移をプロット"""
         ax.plot(rates, objectives, 'o-', linewidth=2, markersize=8)
         ax.fill_between(rates, 
-                       [self.summary[r/100]['avg_objective'] - 
-                        self.summary[r/100]['std_objective'] for r in rates],
-                       [self.summary[r/100]['avg_objective'] + 
-                        self.summary[r/100]['std_objective'] for r in rates],
+                       [self.summary[r/100]['avg_objective_present'] - 
+                        self.summary[r/100]['std_objective_present'] for r in rates],
+                       [self.summary[r/100]['avg_objective_present'] + 
+                        self.summary[r/100]['std_objective_present'] for r in rates],
                        alpha=0.2)
         
         ax.set_title('Relationship between the rate of new farmers and the objective function', fontsize=14, pad=20)
         ax.set_xlabel('Rate of Newly Regulated Farmers (%)')
-        ax.set_ylabel('objective function value')
+        ax.set_ylabel('expected objective function value')
         ax.grid(True, linestyle='--', alpha=0.7)
         
         best_rate = max(self.summary.keys(), 
-                       key=lambda r: self.summary[r]['avg_objective'])
-        best_value = self.summary[best_rate]['avg_objective']
+                       key=lambda r: self.summary[r]['avg_objective_present'])
+        best_value = self.summary[best_rate]['avg_objective_present']
         ax.plot(best_rate * 100, best_value, 'r*', markersize=15, 
-                label=f'最適値 ({best_rate*100:.1f}%)')
+                label=f'best rate ({best_rate*100:.1f}%)')
         ax.legend()
-    def _plot_payments(self, ax: plt.Axes, rates: np.ndarray, 
+
+    def _plot_objective_function_lie(self, ax: plt.Axes, rates: np.ndarray, 
+                               objectives: List[float]):
+        """目的関数の推移をプロット"""
+        ax.plot(rates, objectives, 'o-', linewidth=2, markersize=8)
+        ax.fill_between(rates, 
+                       [self.summary[r/100]['avg_objective_lie'] - 
+                        self.summary[r/100]['std_objective_lie'] for r in rates],
+                       [self.summary[r/100]['avg_objective_lie'] + 
+                        self.summary[r/100]['std_objective_lie'] for r in rates],
+                       alpha=0.2)
+        
+        ax.set_title('Relationship between the rate of new farmers and the objective function', fontsize=14, pad=20)
+        ax.set_xlabel('Rate of Newly Regulated Farmers (%)')
+        ax.set_ylabel('expected objective function value')
+        ax.grid(True, linestyle='--', alpha=0.7)
+        
+        best_rate = max(self.summary.keys(), 
+                       key=lambda r: self.summary[r]['avg_objective_lie'])
+        best_value = self.summary[best_rate]['avg_objective_lie']
+        ax.plot(best_rate * 100, best_value, 'r*', markersize=15, 
+                label=f'best rate ({best_rate*100:.1f}%)')
+        ax.legend()
+
+    def _plot_payments_present(self, ax: plt.Axes, rates: np.ndarray, 
                       payments: List[float]):
-        """支払額の推移をプロット"""
+        """正直申告時の支払額の推移をプロット"""
         ax.plot(rates, payments, 'o-', linewidth=2, markersize=8, color='green')
         ax.fill_between(rates,
-                       [self.summary[r/100]['avg_payment'] - 
-                        self.summary[r/100]['std_payment'] for r in rates],
-                       [self.summary[r/100]['avg_payment'] + 
-                        self.summary[r/100]['std_payment'] for r in rates],
+                       [self.summary[r/100]['avg_payment_truth'] - 
+                        self.summary[r/100]['std_payment_truth'] for r in rates],
+                       [self.summary[r/100]['avg_payment_truth'] + 
+                        self.summary[r/100]['std_payment_truth'] for r in rates],
                        alpha=0.2, color='green')
         
         ax.set_title('Relationship between the percentage of new farmers and the amount of payments', fontsize=14, pad=20)
-        ax.set_xlabel('Percentage of new farmers (%)')
+        ax.set_xlabel('Rate of Newly Regulated Farmers (%)')
         ax.set_ylabel('amount paid')
         ax.grid(True, linestyle='--', alpha=0.7)
 
-    def _create_correlation_plot(self):
+    def _create_correlation_plot_present(self):
         """目的関数と支払額の相関プロット"""
         plt.figure(figsize=(8, 8))
         
-        objectives = [stats['avg_objective'] for stats in self.summary.values()]
-        payments = [stats['avg_payment'] for stats in self.summary.values()]
+        objectives = [stats['avg_objective_present'] for stats in self.summary.values()]
+        payments = [stats['avg_payment_truth'] for stats in self.summary.values()]
         rates = [rate * 100 for rate in self.summary.keys()]
         
         plt.scatter(objectives, payments, c=rates, cmap='viridis', s=100)
@@ -652,7 +997,7 @@ class FarmingSimulation:
         plt.ylabel('amount paid')
         plt.grid(True, linestyle='--', alpha=0.7)
 
-    def _create_distribution_plot(self):
+    def _create_distribution_plot_present(self):
         """分布プロットを作成"""
         # ここでresultsをDataFrameに変換
         data = []
@@ -660,9 +1005,11 @@ class FarmingSimulation:
             for result in results:
                 data.append({
                     'rate': rate,
-                    'objective': result['objective_value'],
-                    'payment': result['total_payment']
+                    'objective': result['objective_present'],
+                    'payment': result['total_payment_truth'],
+                    
                 })
+                #うえにあったやつ'profit_FARMER0': result['profit_FARMER0']
         
         # DataFrameに変換
         df = pd.DataFrame(data)
@@ -673,66 +1020,138 @@ class FarmingSimulation:
         ax1.set_title('Objective Value Distribution by New Farmer Rate')
         plt.show()
 
+    def _create_difference_plots_present(self):
+        """利得差異と社会的余剰差異の分布プロットを作成"""
+        # 利得差異のプロット
+        rates = np.array([rate * 100 for rate in sorted(self.summary.keys())])
+        profit_diffs = [self.summary[rate/100]['avg_profit_difference_farm0'] for rate in rates]
+        social_surplus_diffs = [self.summary[rate/100]['avg_social_surplus_difference'] for rate in rates]
+        
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+        
+        # 利得差異のプロット
+        ax1.plot(rates, profit_diffs, 'o-', linewidth=2, markersize=8, color='purple')
+        ax1.fill_between(rates, 
+                        [self.summary[r/100]['avg_profit_difference_farm0'] - 
+                            self.summary[r/100]['std_profit_difference_farm0'] for r in rates],
+                        [self.summary[r/100]['avg_profit_difference_farm0'] + 
+                            self.summary[r/100]['std_profit_difference_farm0'] for r in rates],
+                        alpha=0.2, color='purple')
+        
+        ax1.set_title('Relationship between the rate of new farmers and the profit difference', fontsize=14, pad=20)
+        ax1.set_xlabel('Rate of Newly Regulated Farmers (%)')
+        ax1.set_ylabel('Profit Difference (Truth - False Declaration)')
+        ax1.grid(True, linestyle='--', alpha=0.7)
+        
+        # 社会的余剰差異のプロット
+        ax2.plot(rates, social_surplus_diffs, 'o-', linewidth=2, markersize=8, color='orange')
+        ax2.fill_between(rates, 
+                        [self.summary[r/100]['avg_social_surplus_difference'] - 
+                            self.summary[r/100]['std_social_surplus_difference'] for r in rates],
+                        [self.summary[r/100]['avg_social_surplus_difference'] + 
+                            self.summary[r/100]['std_social_surplus_difference'] for r in rates],
+                        alpha=0.2, color='orange')
+        
+        ax2.set_title('Relationship between the rate of new farmers and the social surplus difference', fontsize=14, pad=20)
+        ax2.set_xlabel('Rate of Newly Regulated Farmers (%)')
+        ax2.set_ylabel('Social Surplus Difference (Truth - False Declaration)')
+        ax2.grid(True, linestyle='--', alpha=0.7)
+        
+        plt.tight_layout()
+
     def _print_summary(self):
         """結果サマリーを表示"""
         if not self.summary:
             print("有効な結果がありません")
             return
 
-        self._print_table_header()
-        self._print_results_table()
-        self._print_optimal_rate()
-
-    def _print_table_header(self):
+        self._print_table_header_truth()
+        self._print_results_table_truth()
+        self._print_optimal_rate_truth()
+        self._print_table_header_lie()
+        self._print_results_table_lie()
+        self._print_optimal_rate_lie()
+#######################################################ここから             
+    def _print_table_header_lie(self):
         """結果テーブルのヘッダーを表示"""
         print("\n=== シミュレーション結果 ===")
-        print("率(%) | 目的関数平均 | 標準偏差 | 支払額平均 | 標準偏差 | 実際の新規率(%)")
-        print("-" * 75)
-
-    def _print_results_table(self):
+        print("率(%) | 目的関数平均(嘘) | 標準偏差(嘘) | 支払額平均(嘘) | 標準偏差(嘘) | 農家0の利得差異平均 | 農家0の利得差異標準偏差 | 社会的余剰差異平均 | 社会的余剰差異標準偏差 | 農家0の利得")
+        print("-" * 160)
+    
+    def _print_results_table_lie(self):
         """結果テーブルの内容を表示"""
         for rate, stats in sorted(self.summary.items()):
             print(
-                f"{rate*100:5.1f} | {stats['avg_objective']:11.2f} | "
-                f"{stats['std_objective']:8.2f} | {stats['avg_payment']:9.2f} | "
-                f"{stats['std_payment']:8.2f} | {stats['actual_rate']*100:8.1f}"
+                f"{rate*100:5.1f} | {stats['avg_objective_lie']:11.2f} | "
+                f"{stats['std_objective_lie']:8.2f} | {stats['avg_payment_lie']:9.2f} | "
+                f"{stats['std_payment_lie']:8.2f} | {stats['avg_profit_difference_farm0']:20.2f} | "
+                f"{stats['std_profit_difference_farm0']:20.2f} | "
+                f"{stats['avg_social_surplus_difference']:25.2f} | "
+                f"{stats['std_social_surplus_difference']:25.2f} | "
+                f"{stats['avg_profit_FARMER0_inlier']:8.1f}"
             )
 
-    def _print_optimal_rate(self):
-        """最適な新規就農者率の情報を表示"""
+    def _print_table_header_truth(self):
+        """結果テーブルのヘッダーを表示"""
+        print("\n=== シミュレーション結果 ===")
+        print("率(%) | 目的関数平均(真値) | 標準偏差(真値) | 支払額平均(真値) | 標準偏差(真値) | 農家0の利得差異平均 | 農家0の利得差異標準偏差 | 社会的余剰差異平均(真値) | 社会的余剰差異標準偏差(真値) | 農家0の利得")
+        print("-" * 160)
+
+    def _print_results_table_truth(self):
+        """結果テーブルの内容を表示"""
+        stats = {'avg_profit_FARMER0': 0.0}
+
+        for rate, stats in sorted(self.summary.items()):
+            print(
+                f"{rate*100:5.1f} | {stats['avg_objective_present']:11.2f} | "
+                f"{stats['std_objective_present']:8.2f} | {stats['avg_payment_truth']:9.2f} | "
+                f"{stats['std_payment_truth']:8.2f} | {stats['avg_profit_difference_farm0']:20.2f} | "
+                f"{stats['std_profit_difference_farm0']:20.2f} | "
+                f"{stats['avg_social_surplus_difference']:25.2f} | "
+                f"{stats['std_social_surplus_difference']:25.2f} | "
+                f"{stats['avg_profit_FARMER0']:8.1f}"
+            )
+
+    def _print_optimal_rate_truth(self):
+        """すべて真値のとき最適な新規就農者率の情報を表示"""
         best_rate = max(self.summary.keys(), 
-                       key=lambda r: self.summary[r]['avg_objective'])
+                       key=lambda r: self.summary[r]['avg_objective_present'])
         
         print("\n=== 分析結果 ===")
         print(f"目的関数が最大となる新規就農者率: {best_rate*100:.1f}%")
-        print(f"このときの目的関数平均: {self.summary[best_rate]['avg_objective']:.2f}")
-        print(f"このときの支払額平均: {self.summary[best_rate]['avg_payment']:.2f}")
-
+        print(f"このときの目的関数平均: {self.summary[best_rate]['avg_objective_present']:.2f}")
+        print(f"このときの支払額平均: {self.summary[best_rate]['avg_payment_truth']:.2f}")
+    def _print_optimal_rate_lie(self):
+        """すべて真値でないとき最適な新規就農者率の情報を表示"""
+        best_rate = max(self.summary.keys(), 
+                       key=lambda r: self.summary[r]['avg_objective_lie'])
+        
+        print("\n=== 分析結果 ===")
+        print(f"目的関数が最大となる新規就農者率: {best_rate*100:.1f}%")
+        print(f"このときの目的関数平均: {self.summary[best_rate]['avg_objective_lie']:.2f}")
+        print(f"このときの支払額平均: {self.summary[best_rate]['avg_payment_lie']:.2f}")
 
     def _create_farms(self, config: SimulationConfig, new_farmer_rate: float) -> List[Farm]:
         """農家リストを作成"""
         total_farmers = config.FARMERS
-        new_farmers_count = int(total_farmers * new_farmer_rate)
+        new_farmer_count = int(total_farmers * new_farmer_rate)
         
         farms = []
         
         # 既存農家を作成
         for i in range(total_farmers):
-            if config.THERE_IS_A_LIER and i == 0:
-                farm = Farm(config, farm_id=i, is_new=False)
-                farm.initialize_random(new_farmer_rate)
-                farm.machine_count = 0  # 虚偽申告として農機台数を0に設定
-                farms.append(farm)
-            else:
-                farm = Farm(config, farm_id=i, is_new=False)
-                farm.initialize_random(new_farmer_rate)
-                farms.append(farm)
-
-        # 新規就農者を作成
-        for i in range(new_farmers_count):
-            farm = Farm(self.config, farm_id=total_farmers + i, is_new=True)
+            farm = Farm(config, farm_id=i, is_new=False)
             farm.initialize_random(new_farmer_rate)
             farms.append(farm)
+        
+        # 新規就農者を作成
+        for i in range(total_farmers):
+            if i == 0:
+                continue
+            if random.random() < new_farmer_rate:
+                farm = Farm(self.config, farm_id= i, is_new=True)
+                farm.initialize_random(new_farmer_rate)
+                farms[i] = farm
 
         return farms
 
