@@ -15,9 +15,9 @@ import matplotlib.font_manager as fm
 @dataclass
 class SimulationConfig:
     """シミュレーションの設定を保持するクラス"""
-    FARMERS: int = 5                                                    # 参加農家の数
+    FARMERS: int = 50                                                    # 参加農家の数
     DAYS: int = 7                                                        # 対象期間の日数
-    TESTS: int = 5                                                       # シミュレーション実験回数
+    TESTS: int = 100                                                       # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
     COST_CULTIVATION: float = (6.5+7.1)/2                                # 農地開墾を金額換算した値
     WORK_EFFICIENCY: float = 12000/14                                    # 農機1台が1日に耕せる面積
@@ -638,7 +638,9 @@ class FarmingSimulation:
         self.results = {}  # 新規就農者率ごとの結果を保存
         self.summary = {}  # 結果の統計情報
 
-    def run(self):
+    def run(self, Seeds_value):
+        random.seed(Seeds_value)
+        np.random.seed(Seeds_value)
         """シミュレーション全体を実行"""
         self._run_all_rates()
         self._analyze_results()
@@ -1376,6 +1378,9 @@ def setup_output_directory():
 
 def main():
     """メイン実行関数"""
+    # シード値の読み込み
+    TEST_NUMBER = 0
+    Seeds_value = pd.read_csv('seeds.csv', header = None).values.tolist()
     try:
         print("=== 農業シミュレーション開始 ===")
         
@@ -1394,7 +1399,9 @@ def main():
         
         # シミュレーションの実行
         simulation = FarmingSimulation(config)
-        simulation.run()
+        seedValue = Seeds_value[0][TEST_NUMBER]
+        simulation.run(seedValue)
+        TEST_NUMBER += 1
         print("シミュレーション完了")
         
         # 結果をExcelファイルに保存
