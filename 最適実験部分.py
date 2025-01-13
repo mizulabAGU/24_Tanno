@@ -10,12 +10,12 @@ import seaborn as sns
 from pathlib import Path
 import pandas as pd
 import matplotlib.font_manager as fm
-
+#農機台数の平均が.233台数のときは
 # 設定クラス
 @dataclass
 class SimulationConfig:
     """シミュレーションの設定を保持するクラス"""
-    FARMERS: int = 3                                                    # 参加農家の数
+    FARMERS: int = 5                                                     # 参加農家の数
     DAYS: int = 7                                                        # 対象期間の日数
     TESTS: int = 1                                                       # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
@@ -23,7 +23,7 @@ class SimulationConfig:
     WORK_EFFICIENCY: float = 12000/14                                    # 農機1台が1日に耕せる面積
     AREA_AVERAGE: float = 34000.0                                        # 農地面積の平均値
     NEW_FARMER_AREA_AVERAGE: float = 27000.0                             # 新規就農者の農地面積の平均値
-    FARMER_UTILITY: float = 6/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
+    FARMER_UTILITY: float = 4/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
     AREA_RANGE: float = 10000.0                                          # 農地面積のばらつき幅
     NEW_FARMER_RATE_STEP: float = 0.2                                    # 新規就農者率のステップ
     UTILITY_START: int = 10                                              # 効用値の初期値
@@ -114,10 +114,13 @@ class Farm:
         """農家の所持農機の割当（真値）"""
         if self.is_new:
             return 0
-        if random.random() < 0.7:
-            return 1
-        else:
-            return 2
+        a = random.random()         
+        if a < 0.17:             
+            return 1         
+        elif a < 0.33:             
+            return 2        
+        else:             
+            return 3
 
     def _generate_utility(self) -> List[int]:
         """各農家の効用を導出"""
@@ -149,29 +152,6 @@ class FarmingOptimizer:
         self.model.setParam('TimeLimit', 30000)
         self.model.setParam('MIPGap', 0.1)
 
-    def _calculate_Removei(self, farms: List[Farm], weather_forecast: List[float], 
-                actual_weather: List[int], W, Calculate_FARMER0_profit: bool,h:int) -> float:
-        """農家hが存在しない社会での社会的余剰の計算"""
-        profit_FARMER_noti_social = 0
-        farmsi_machine_count =0
-        farmsi_land_area = 0
-
-        farmsi_machine_count = farms[h].machine_count 
-        farmsi_land_area = farms[h].land_area 
-        farms[h].machine_count =0
-        farms[h].land_area = 0
-        self.reset_model()
-        self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
-        vars = self.create_variables()#変数の作成
-        self.set_constraints(vars, farms, weather_forecast)#制約の設定
-        self.set_objective(vars, farms)#目的関数の設定
-        self.model.optimize()#最適化の実行
-        farms[h].machine_count = farmsi_machine_count
-        farms[h].land_area = farmsi_land_area
-        if self.model.status == gp.GRB.OPTIMAL:
-            return self.model.ObjVal
-        else:
-            raise OptimizationError(f"Removeiにおいて最適化失敗 (Status: {self.model.Status})")
 
     def optimize(self, farms: List[Farm], weather_forecast: List[float], 
                 actual_weather: List[int], W, Calculate_FARMER0_profit: bool) -> Dict:
@@ -186,45 +166,58 @@ class FarmingOptimizer:
         Social_surplus_lie = 0
         Farmer_payments = []
         Farmer_profit = []
-        how_many_farmer_trasnsport_truth =[]
-        how_many_farmer_trasnsport_lie =[]
-        how_many_farmer_land_area_truth = []
-        how_many_farmer_land_area_lie = []
-        try:
-            
+        weather_pattern = weather_forecast
+        not_i = []
+        remove_i = []
+        # リストの初期化を修正
+        how_many_farmer_trasnsport_truth = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
+        how_many_farmer_trasnsport_lie = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
+        how_many_farmer_land_area_truth = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
+        how_many_farmer_land_area_lie = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
+        how_many_farmer_schedule_truth = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
+        how_many_farmer_schedule_lie = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
+        farmers_available_schedule = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
+
+        for d in range(self.config.DAYS):
+            for farm in farms:
+                farmers_available_schedule[farm.id][d] = farm.utility[d]
             # メインの最適化モデルをリセットし、設定を行う
             self.reset_model()
             self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
-            vars = self.create_variables()  # 変数の作成
-            self.set_constraints(vars, farms, weather_forecast)  # 制約の設定
+            vars = self.create_variables(boolean_number=False,farm_i=0,machine_count=0)  # 変数の作成
+            self.set_constraints(vars, farms, weather_forecast,farm_i=0,boolean_number=False)  # 制約の設定
             self.set_objective(vars, farms)  # 目的関数の設定
             self.model.optimize()  # 最適化の実行
-            
+
             # 最適化が成功したか確認
             if self.model.status != gp.GRB.OPTIMAL:
                 raise OptimizationError(f"最適化に失敗しました。ステータス: {self.model.status}")
-            Profit=[]
+            Profit=[]#個人個人の利益
+            t =1.0
+            for w in range(2 ** self.config.DAYS):
+                t *= vars['z'][w].X
             for i in range(self.config.FARMERS):
                 Profit.append(self.config.COST_CULTIVATION * 
-                            sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2 ** self.config.DAYS)) -
-                            self.config.COST_MOVE * 
-                            sum(vars['t'][i, d].X for d in range(self.config.DAYS)))
-
+                            (sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2**self.config.DAYS))) 
+                                 
+                            - self.config.COST_MOVE * sum(vars['t'][i, d].X for d in range(self.config.DAYS))
+                            )
             print(f"最適化成功。現在の目的関数値: { self.model.ObjVal}")
+            
             
             Obj_present = self.model.ObjVal  # 正直に申告したときの目的関数の値
             results = self.get_results(vars, farms, actual_weather, weather_forecast, W)
             Profit_present = []
             for i in range(self.config.FARMERS):
-                Profit_present.append(self.config.COST_CULTIVATION * 
-                            sum(vars['c'][h, w].X * vars['z'][w].X for h in range(self.config.FARMERS) if h != i for w in range(2 ** self.config.DAYS)) -
-                            self.config.COST_MOVE * 
-                            sum(vars['t'][h, d].X for h in range(self.config.FARMERS) if h != i for d in range(self.config.DAYS)))
-                how_many_farmer_trasnsport_truth.append(sum(vars['t'][i, d].X for d in range(self.config.DAYS)))
-                how_many_farmer_land_area_truth.append(sum(vars['c'][i, w].X*vars['z'][w].X for w in range(2 ** self.config.DAYS)))
+                
+                Profit_present.append(Obj_present - Profit[i])
+                a = b = c= 0
+                for d in range(self.config.DAYS):
+                    how_many_farmer_trasnsport_truth[i][d] = vars['t'][i, d].X
+                    how_many_farmer_land_area_truth[i][d] = sum(vars['c'][i, w].X*vars['z'][w].X for w in range(2 ** self.config.DAYS))
+                    how_many_farmer_schedule_truth[i][d] = vars['s'][i, d].X
             # 各農家の支払金額を計算
             for i in range(self.config.FARMERS):
-                
                 Profit_absent = []
                 print(f"\n農家{i}の支払金額を計算中...")
                 
@@ -238,10 +231,12 @@ class FarmingOptimizer:
                 # 農家iを除外した最適化モデルを設定
                 self.reset_model()
                 self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
-                vars_removed = self.create_variables()  # 変数の作成
-                self.set_constraints(vars_removed, farms, weather_forecast)  # 制約の設定
+                vars_removed = self.create_variables(boolean_number=True,farm_i=i,machine_count=farms[i].machine_count)  # 変数の作成
+                self.set_constraints(vars_removed, farms, weather_forecast,farm_i=i,boolean_number=False)  # 制約の設定
                 self.set_objective(vars_removed, farms)  # 目的関数の設定
                 self.model.optimize()  # 最適化の実行
+                farms[i].machine_count = farmi_machine_count
+                farms[i].land_area = farmi_land_area
                 
                 # 最適化が成功したか確認
                 if self.model.status != gp.GRB.OPTIMAL:
@@ -249,9 +244,10 @@ class FarmingOptimizer:
                 
                 Obj_absent = self.model.ObjVal  # 農家iを除外した場合の目的関数の値
                 #print(f"農家{i}を除外した場合の目的関数値: {Obj_absent}")
-                
+                not_i.append(Profit_present[i])
+                remove_i.append(Obj_absent)
                 # VCG支払金額の計算
-                payment_i = Obj_absent - Profit_present[i]
+                payment_i = Profit_present[i] -Obj_absent
                 Farmer_payments.append(payment_i)
                 print(f"農家{i}の利益: {Profit[i]}")
                 print(f"農家{i}の支払額: {payment_i}")
@@ -260,11 +256,9 @@ class FarmingOptimizer:
                 farms[i].machine_count = farmi_machine_count
                 farms[i].land_area = farmi_land_area
                 Farmer_payments_truth.append(payment_i)
-                Profit_truth.append(Profit[i]+payment_i)
+                Profit_truth.append(Profit[i])
                 Social_surplus_truth += Profit[i]+payment_i
 
-            
-            
             # 支払金額の総和を計算
             """全農家の支払額を計算"""
             total_payment = sum(Farmer_payments)
@@ -278,11 +272,11 @@ class FarmingOptimizer:
             farms0_machine_count = farms[0].machine_count
             farms[0].machine_count = 0
             self.reset_model()
-            self.model.setParam('TimeLimit', 600)  # 時間制限を10分に設定
+            self.model.setParam('TimeLimit', 30000)  # 時間制限を10分に設定
             self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
             self.model.setParam('NodefileStart', 0.5)
-            vars = self.create_variables()#変数の作成
-            self.set_constraints(vars, farms, weather_forecast)#制約の設定
+            vars = self.create_variables(boolean_number=False,farm_i=0,machine_count=farms0_machine_count)#変数の作成
+            self.set_constraints(vars, farms, weather_forecast,farm_i=0,boolean_number=False)#制約の設定
             self.set_objective(vars, farms)#目的関数の設定
             self.model.optimize()#最適化の実行
 
@@ -293,28 +287,30 @@ class FarmingOptimizer:
                 print("診断情報が 'model.ilp' に保存されました。")
                 raise OptimizationError(f"農家0が嘘をついたときの最適化に失敗しました。ステータス: {self.model.status}")
             Profit_lie=[]
+            Profitaaa=[]
+            for i in range(self.config.FARMERS):
+                Profitaaa.append(self.config.COST_CULTIVATION * 
+                            (sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2**self.config.DAYS))) 
+                                 
+                            - self.config.COST_MOVE * sum(vars['t'][i, d].X for d in range(self.config.DAYS))
+                            )
             Profit_lie1 = []#農家i以外の獲得利益
             for i in range(self.config.FARMERS):
-                Profit_lie.append(self.config.COST_CULTIVATION * 
-                            sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2 ** self.config.DAYS)) -
-                            self.config.COST_MOVE * 
-                            sum(vars['t'][i, d].X for d in range(self.config.DAYS)))
+                Profit_lie.append(self.model.ObjVal-Profitaaa[i])
                 if i==0:
                     farmer0_profit_difference = sum(self.config.COST_CULTIVATION *self.config.WORK_EFFICIENCY*farms0_machine_count * actual_weather[d]*farms[0].utility[d] for d in range(self.config.DAYS))
-                    Profit_lie[i] = Profit_truth[i] + farmer0_profit_difference
+                    Profit_lie[i] = Profit_lie[i] + farmer0_profit_difference
                     if Profit_lie[i] > self.config.COST_CULTIVATION * farms[0].land_area:
                         Profit_lie[i] = self.config.COST_CULTIVATION * farms[0].land_area
             for i in range(self.config.FARMERS):
-                Profit_lie1.append(self.config.COST_CULTIVATION * 
-                            sum(vars['c'][i, w].X * vars['z'][w].X for i in range(self.config.FARMERS) if i != 0 for w in range(2 ** self.config.DAYS)) -
-                            self.config.COST_MOVE * 
-                            sum(vars['t'][i, d].X for i in range(self.config.FARMERS) if i != 0 for d in range(self.config.DAYS)))
-                how_many_farmer_trasnsport_lie.append(sum(vars['t'][i, d].X for d in range(self.config.DAYS)))
-                how_many_farmer_land_area_lie.append(sum(vars['c'][i, w].X*vars['z'][w].X  for w in range(2 ** self.config.DAYS)))
+                Profit_lie1.append(self.model.ObjVal-Profit_lie[i])
+                for d in range(self.config.DAYS):
+                    how_many_farmer_trasnsport_lie[i][d] = vars['t'][i, d].X
+                    how_many_farmer_land_area_lie[i][d] = sum(vars['c'][i, w].X*vars['z'][w].X for w in range(2 ** self.config.DAYS))
+                    how_many_farmer_schedule_lie[i][d] = vars['s'][i, d].X
             print("-----------農家oがうそをついたとき------------------------")
             Obj_lie = self.model.ObjVal  # 農家0が嘘をついたときの目的関数の値
             print(f"最適化成功。現在の目的関数値: {Obj_present}")
-            #print(f"農家0の利得(嘘をついたとき): {Profit_lie[0]}")
 
             Farmer_payment_inlier =[]
             Farmer_profit1 = []
@@ -335,11 +331,13 @@ class FarmingOptimizer:
                 # 農家iを除外した最適化モデルを設定
                 self.reset_model()
                 self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
-                vars_removed = self.create_variables()  # 変数の作成
-                self.set_constraints(vars_removed, farms, weather_forecast)  # 制約の設定
+                vars_removed = self.create_variables(boolean_number=True,farm_i=i,machine_count=farms[i].machine_count)  # 変数の作成
+                self.set_constraints(vars_removed, farms, weather_forecast,farm_i=i,boolean_number=True)  # 制約の設定
                 self.set_objective(vars_removed, farms)  # 目的関数の設定
                 self.model.optimize()  # 最適化の実行
-                
+                farms[i].machine_count = farmi_machine_count
+                farms[i].land_area = farmi_land_area
+
                 # 最適化が成功したか確認
                 if self.model.status != gp.GRB.OPTIMAL:
                     raise OptimizationError(f"農家0が嘘をついたときの農家{i}を除外した最適化に失敗しました。ステータス: {self.model.status}")
@@ -348,7 +346,7 @@ class FarmingOptimizer:
                 #print(f"農家0が嘘をついたときの農家{i}を除外した場合の目的関数値: {Obj_absent}")
                 
                 # VCG支払金額の計算
-                payment_i = Obj_absent - Profit_lie1[i]
+                payment_i = Profit_lie1[i] - Obj_absent
                 Farmer_payment_inlier.append(payment_i)
                 print(f"農家{i}の利益: {Profit_lie[i]}")
                 print(f"農家{i}の支払額: {payment_i}")
@@ -357,7 +355,7 @@ class FarmingOptimizer:
                 farms[i].machine_count = farmi_machine_count
                 farms[i].land_area = farmi_land_area
                 Farmer_payments_lie.append(payment_i)
-                Profit_FARMER0_lie.append(Profit_lie[i]+payment_i)
+                Profit_FARMER0_lie.append(Profit_lie[i])
                 Social_surplus_lie += Profit_lie1[i]+payment_i
             
             # 支払金額の総和を計算
@@ -413,18 +411,20 @@ class FarmingOptimizer:
                 'how_many_farmer_land_area_truth': how_many_farmer_land_area_truth,
                 'how_many_farmer_land_area_lie': how_many_farmer_land_area_lie,
                 'payment':payment,
-                'payment_lie':payment_lie
+                'payment_lie':payment_lie,
+                'how_many_farmer_schedule_truth': how_many_farmer_schedule_truth,
+                'how_many_farmer_schedule_lie': how_many_farmer_schedule_lie,
+                'weather_pattern': weather_pattern,
+                'farmers_available_schedule' : farmers_available_schedule,
+                'not_i': not_i,
+                'remove_i': remove_i
             }
-            
-            
             
             return results
         
-        except Exception as e:
-            print(f"最適化エラー: {str(e)}")
-            raise OptimizationError(str(e))
+        
 
-    def create_variables(self) -> Dict:
+    def create_variables(self,boolean_number:bool,farm_i :int,machine_count:int) -> Dict:
         """最適化変数の作成"""
         vars = {
             's': {},  # 作業量変数
@@ -432,19 +432,33 @@ class FarmingOptimizer:
             't': {},  # 移動変数
             'z': {}   # 天候変数
         }
-        for i in range(self.config.FARMERS):
-            for d in range(self.config.DAYS):
-                vars['s'][i, d] = self.model.addVar(vtype=gp.GRB.INTEGER)
-                vars['t'][i, d] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
+        if boolean_number == True:
+            for i in range(self.config.FARMERS):
+                for d in range(self.config.DAYS):
+                    vars['s'][i, d] = self.model.addVar(vtype=gp.GRB.INTEGER)
+                    vars['t'][i, d] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
+                    if i == farm_i:
+                        self.model.addConstr(vars['s'][i, d] == machine_count)
+                        self.model.addConstr(vars['t'][i, d] == 0)
+                for w in range(2 ** self.config.DAYS):
+                    vars['c'][i, w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
             for w in range(2 ** self.config.DAYS):
-                vars['c'][i, w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
+                vars['z'][w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
+            return vars
+        elif boolean_number == False:
+            for i in range(self.config.FARMERS):
+                for d in range(self.config.DAYS):
+                    vars['s'][i, d] = self.model.addVar(vtype=gp.GRB.INTEGER)
+                    vars['t'][i, d] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
+                for w in range(2 ** self.config.DAYS):
+                    vars['c'][i, w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
+            for w in range(2 ** self.config.DAYS):
+                vars['z'][w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
+            return vars
+        else:
+            raise ValueError("boolean_numberはTrueまたはFalseでなければなりません。")
 
-        for w in range(2 ** self.config.DAYS):
-            vars['z'][w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
-        #print("vars:", vars)  # varsの内容を出力
-        return vars
-
-    def set_constraints(self, vars: Dict, farms: List[Farm], weather_forecast: List[float]):
+    def set_constraints(self, vars: Dict, farms: List[Farm], weather_forecast: List[float],farm_i:int,boolean_number:bool):
         """制約条件の設定"""
         W = self.weather.generate_weather_patterns()
         
@@ -455,6 +469,7 @@ class FarmingOptimizer:
 
         # 農家ごとの制約
         for i in range(self.config.FARMERS):
+            
             # 容量制約
             for w in range(2 ** self.config.DAYS):
                 self.model.addConstr(vars['c'][i, w] <= farms[i].land_area)  # c_{i,w}<=a_i
@@ -489,7 +504,7 @@ class FarmingOptimizer:
                        for w in range(2 ** self.config.DAYS))
             - self.config.COST_MOVE * 
             gp.quicksum(vars['t'][i, d] 
-                       for i in range(self.config.FARMERS) 
+                       for i in range(self.config.FARMERS)
                        for d in range(self.config.DAYS))
         )
         self.model.setObjective(objective, gp.GRB.MAXIMIZE)
@@ -525,7 +540,13 @@ class FarmingOptimizer:
             'how_many_farmer_land_area_truth': [],
             'how_many_farmer_land_area_lie': [],
             'payment':[],
-            'payment_lie':[]
+            'payment_lie':[],
+            'how_many_farmer_schedule_truth': [],
+            'how_many_farmer_schedule_lie': [],
+            'weather_pattern': [],
+            'farmers_available_schedule' : [],
+            'not_i': [],
+            'remove_i': []
 
 
 
@@ -645,28 +666,57 @@ class FarmingSimulation:
                 
                 # 各農家の詳細な結果を収集
                 farm_results = []
-                for farm in farms:
-                    farm_result = {
-                        'farm_id': farm.id,
-                        'machine_count': farm.machine_count,
-                        'land_area': farm.land_area,
-                        '売上': test_result.get('Profit_truth', [])[farm.id] if 'Profit_truth' in test_result and farm.id < len(test_result['Profit_truth']) else '',
-                        '支払額': test_result.get('Farmer_payments_truth', [])[farm.id] if 'Farmer_payments_truth' in test_result and farm.id < len(test_result['Farmer_payments_truth']) else '',
-                        '利得': (test_result.get('Profit_truth', [])[farm.id] + 
-                                 test_result.get('Farmer_payments_truth', [])[farm.id]
-                                 ) if 'Profit_truth' in test_result and 'Farmer_payments_truth' in test_result and farm.id < len(test_result['Profit_truth']) and farm.id < len(test_result['Farmer_payments_truth']) else '',
-                        '移動回数': test_result.get('how_many_farmer_trasnsport_truth', [])[farm.id] if 'how_many_farmer_trasnsport_truth' in test_result and farm.id < len(test_result['how_many_farmer_trasnsport_truth']) else '',
-                        '開墾面積': test_result.get('how_many_farmer_land_area_truth', [])[farm.id] if 'how_many_farmer_land_area_truth' in test_result and farm.id < len(test_result['how_many_farmer_land_area_truth']) else '',
-                        '農家0が嘘をついたときの利益': test_result.get('Profit_lie', [])[farm.id] if 'Profit_lie' in test_result and farm.id < len(test_result['Profit_lie']) else '',
-                        '農家0が嘘をついたときの支払額': test_result.get('Farmer_payments_lie', [])[farm.id] if 'Farmer_payments_lie' in test_result and farm.id < len(test_result['Farmer_payments_lie']) else '',
-                        '農家0が嘘をついたときの利得': (test_result.get('Profit_lie', [])[farm.id] + 
-                                   test_result.get('Farmer_payments_lie', [])[farm.id]
-                                   ) if 'Profit_lie' in test_result and 'Farmer_payments_lie' in test_result and farm.id < len(test_result['Profit_lie']) and farm.id < len(test_result['Farmer_payments_lie']) else '',
-                        '農家0が嘘をついたときの移動回数': test_result.get('how_many_farmer_trasnsport_lie', [])[farm.id] if 'how_many_farmer_trasnsport_lie' in test_result and farm.id < len(test_result['how_many_farmer_trasnsport_lie']) else '',
-                        '農家0が嘘をついたときの開墾面積': test_result.get('how_many_farmer_land_area_lie',  [])[farm.id] if 'how_many_farmer_land_area_lie' in test_result and farm.id < len(test_result['how_many_farmer_land_area_lie']) else '',
-                    }
-                    farm_results.append(farm_result)
-                
+                for farm in farms :
+                        farm_result = {
+                            'farm_id': farm.id,
+                            'machine_count': farm.machine_count,
+                            'land_area': farm.land_area,
+                            '売上': test_result.get('Profit_truth', [])[farm.id] if 'Profit_truth' in test_result and farm.id < len(test_result['Profit_truth']) else '',
+                            '支払額': test_result.get('Farmer_payments_truth', [])[farm.id] if 'Farmer_payments_truth' in test_result and farm.id < len(test_result['Farmer_payments_truth']) else '',
+                            '利得': (test_result.get('Profit_truth', [])[farm.id] + 
+                                    test_result.get('Farmer_payments_truth', [])[farm.id]
+                                    ) if 'Profit_truth' in test_result and 'Farmer_payments_truth' in test_result and farm.id < len(test_result['Profit_truth']) and farm.id < len(test_result['Farmer_payments_truth']) else '',
+                            '移動回数': test_result.get('how_many_farmer_trasnsport_truth', [])[farm.id] if 'how_many_farmer_trasnsport_truth' in test_result and farm.id < len(test_result['how_many_farmer_trasnsport_truth']) else '',
+                            '開墾面積': test_result.get('how_many_farmer_land_area_truth', [])[farm.id] if 'how_many_farmer_land_area_truth' in test_result and farm.id < len(test_result['how_many_farmer_land_area_truth']) else '',
+                            '作業スケジュール': test_result.get('how_many_farmer_schedule_truth', [])[farm.id] if 'how_many_farmer_schedule_truth' in test_result and farm.id < len(test_result['how_many_farmer_schedule_truth']) else '',
+                            '農家0が嘘をついたときの利益': test_result.get('Profit_lie', [])[farm.id] if 'Profit_lie' in test_result and farm.id < len(test_result['Profit_lie']) else '',
+                            '農家0が嘘をついたときの支払額': test_result.get('Farmer_payments_lie', [])[farm.id] if 'Farmer_payments_lie' in test_result and farm.id < len(test_result['Farmer_payments_lie']) else '',
+                            '農家0が嘘をついたときの利得': (test_result.get('Profit_lie', [])[farm.id] + 
+                                    test_result.get('Farmer_payments_lie', [])[farm.id]
+                                    ) if 'Profit_lie' in test_result and 'Farmer_payments_lie' in test_result and farm.id < len(test_result['Profit_lie']) and farm.id < len(test_result['Farmer_payments_lie']) else '',
+                            '農家0が嘘をついたときの移動回数': test_result.get('how_many_farmer_trasnsport_lie', [])[farm.id] if 'how_many_farmer_trasnsport_lie' in test_result and farm.id < len(test_result['how_many_farmer_trasnsport_lie']) else '',
+                            '農家0が嘘をついたときの開墾面積': test_result.get('how_many_farmer_land_area_lie',  [])[farm.id] if 'how_many_farmer_land_area_lie' in test_result and farm.id < len(test_result['how_many_farmer_land_area_lie']) else '',
+                            '農家0が嘘をついたときの作業スケジュール': test_result.get('how_many_farmer_schedule_lie', [])[farm.id] if 'how_many_farmer_schedule_lie' in test_result and farm.id < len(test_result['how_many_farmer_schedule_lie']) else '',
+                            '天気予報':  test_result.get('weather_pattern', [])[farm.id] if 'weather_pattern' in test_result and farm.id < len(test_result['weather_pattern']) else '',
+                            '農家0が嘘をついたときの農家0の利用可能なスケジュール': test_result.get('farmers_available_schedule', [])[farm.id] if 'farmers_available_schedule' in test_result and farm.id < len(test_result['farmers_available_schedule']) else '',
+                            '全体の社会-i': test_result.get('not_i', [])[farm.id] if 'not_i' in test_result and farm.id < len(test_result['not_i']) else '',
+                            '-iの社会': test_result.get('remove_i', [])[farm.id] if 'remove_i' in test_result and farm.id < len(test_result['remove_i']) else '',
+                        }
+                        farm_results.append(farm_result)
+
+                if len(farms) < self.config.DAYS:
+                        for d in range(self.config.DAYS-len(farms)):
+                            farm_result = {
+                                'farm_id': 0,
+                                'machine_count': 0,
+                                'land_area': 0,
+                                '売上': 0,
+                                '支払額': 0,
+                                '利得': 0,
+                                '移動回数': 0,
+                                '開墾面積': 0,
+                                '作業スケジュール': 0,
+                                '農家0が嘘をついたときの利益': 0,
+                                '農家0が嘘をついたときの支払額': 0,
+                                '農家0が嘘をついたときの利得': 0,
+                                '農家0が嘘をついたときの移動回数':0,
+                                '農家0が嘘をついたときの開墾面積':0,
+                                '農家0が嘘をついたときの作業スケジュール': 0,
+                                '天気予報':  test_result.get('weather_pattern', [])[d+len(farms)] if 'weather_pattern' in test_result and farm.id < len(test_result['weather_pattern']) else '',
+                                '農家0が嘘をついたときの農家0の利用可能なスケジュール': 0,
+                                '全体の社会-i': 0 ,
+                                '-iの社会': 0 }
+                            farm_results.append(farm_result)
                 # テスト結果に 'farm_results' を追加
                 test_result['farm_results'] = farm_results
                 
@@ -690,7 +740,6 @@ class FarmingSimulation:
                             'rate': rate,
                             'transfers': transfers
                         })
-
         # DataFrameに変換
         df = pd.DataFrame(transfer_data)
 
@@ -807,7 +856,10 @@ class FarmingSimulation:
             'how_many_farmer_trasnsport_lie': [test['how_many_farmer_trasnsport_lie'] for test in tests],
             'how_many_farmer_land_area_truth': [test['how_many_farmer_land_area_truth'] for test in tests],
             'how_many_farmer_land_area_lie': [test['how_many_farmer_land_area_lie'] for test in tests],
-            
+            'weather_pattern': [test['weather_pattern'] for test in tests],
+            'farmers_available_schedule': [test['farmers_available_schedule'] for test in tests],
+            'not_i': [test['not_i'] for test in tests],
+            'remove_i': [test['remove_i'] for test in tests],
         }
 
         # 農家0の平均利得を計算
@@ -1247,23 +1299,29 @@ class FarmingSimulation:
                         '利得': farm.get('利得', ''),
                         '移動回数': farm.get('移動回数', ''),
                         '開墾面積': farm.get('開墾面積', ''),
+                        '作業スケジュール': farm.get('作業スケジュール', ''),
                         '農家0が嘘をついたときの利益': farm.get('農家0が嘘をついたときの利益', ''),
                         '農家0が嘘をついたときの支払額': farm.get('農家0が嘘をついたときの支払額', ''),
                         '農家0が嘘をついたときの利得': farm.get('農家0が嘘をついたときの利得', ''),
                         '農家0が嘘をついたときの移動回数': farm.get('農家0が嘘をついたときの移動回数', ''),
-                        '農家0が嘘をついたときの開墾面積': farm.get('農家0が嘘をついたときの開墾面積', '')
+                        '農家0が嘘をついたときの開墾面積': farm.get('農家0が嘘をついたときの開墾面積', ''),
+                        '農家0が嘘をついたときの作業スケジュール': farm.get('農家0が嘘をついたときの作業スケジュール', ''),
+                        '天気予報': farm.get('天気予報', ''),
+                        '農家0が嘘をついたときの農家0の利用可能なスケジュール': farm.get('農家0が嘘をついたときの農家0の利用可能なスケジュール', ''),
+                        '全体の社会-i': farm.get('全体の社会-i', ''),
+                        '-iの社会': farm.get('-iの社会', '')
                     })
                     #'売上': test['Profit_truth'][farm['farm_id']] if 'Profit_truth' in test and farm['farm_id'] < len(test['Profit_truth']) else '',
                     #    '支払額': test['Farmer_payments_truth'][farm['farm_id']] if 'Farmer_payments_truth' in test and farm['farm_id'] < len(test['Farmer_payments_truth']) else '',
-                     #   '利得': test['Profit_truth'][farm['farm_id']] + test['Farmer_payments_truth'][farm['farm_id']] if 'Profit_truth' in test and 'Farmer_payments_truth' in test and farm['farm_id'] < len(test['Profit_truth']) and farm['farm_id'] < len(test['Farmer_payments_truth']) else '',
-                     #   '移動回数': test['how_many_farmer_trasnsport_truth'][farm['farm_id']] if 'how_many_farmer_trasnsport_truth' in test and farm['farm_id'] < len(test['how_many_farmer_trasnsport_truth']) else '',
-                     #     '開墾面積': sum(farm['capacity'].values()) if 'capacity' in farm else '',
-                        #'農家0が嘘をついたときの利益': test['Profit_lie'][farm['farm_id']] if 'Profit_lie' in test and farm['farm_id'] < len(test['Profit_lie']) else '',
-                        #'農家0が嘘をついたときの支払額': test['Farmer_payments_lie'][farm['farm_id']] if 'Farmer_payments_lie' in test and farm['farm_id'] < len(test['Farmer_payments_lie']) else '',
-                        #'農家0が嘘をついたときの利得': test['Profit_lie'][farm['farm_id']] + test['Farmer_payments_lie'][farm['farm_id']] if 'Profit_lie' in test and 'Farmer_payments_lie' in test and farm['farm_id'] < len(test['Profit_lie']) and farm['farm_id'] < len(test['Farmer_payments_lie']) else '',
-                        #'農家0が嘘をついたときの移動回数': test['how_many_farmer_trasnsport_lie'][farm['farm_id']] if 'how_many_farmer_trasnsport_lie' in test and farm['farm_id'] < len(test['how_many_farmer_trasnsport_lie']) else '',
-                        #'農家0が嘘をついたときの開墾面積': sum(farm['capacity'].values()) if 'capacity' in farm else ''
-    
+                    #   '利得': test['Profit_truth'][farm['farm_id']] + test['Farmer_payments_truth'][farm['farm_id']] if 'Profit_truth' in test and 'Farmer_payments_truth' in test and farm['farm_id'] < len(test['Profit_truth']) and farm['farm_id'] < len(test['Farmer_payments_truth']) else '',
+                    #   '移動回数': test['how_many_farmer_trasnsport_truth'][farm['farm_id']] if 'how_many_farmer_trasnsport_truth' in test and farm['farm_id'] < len(test['how_many_farmer_trasnsport_truth']) else '',
+                    #     '開墾面積': sum(farm['capacity'].values()) if 'capacity' in farm else '',
+                    #'農家0が嘘をついたときの利益': test['Profit_lie'][farm['farm_id']] if 'Profit_lie' in test and farm['farm_id'] < len(test['Profit_lie']) else '',
+                    #'農家0が嘘をついたときの支払額': test['Farmer_payments_lie'][farm['farm_id']] if 'Farmer_payments_lie' in test and farm['farm_id'] < len(test['Farmer_payments_lie']) else '',
+                    #'農家0が嘘をついたときの利得': test['Profit_lie'][farm['farm_id']] + test['Farmer_payments_lie'][farm['farm_id']] if 'Profit_lie' in test and 'Farmer_payments_lie' in test and farm['farm_id'] < len(test['Profit_lie']) and farm['farm_id'] < len(test['Farmer_payments_lie']) else '',
+                    #'農家0が嘘をついたときの移動回数': test['how_many_farmer_trasnsport_lie'][farm['farm_id']] if 'how_many_farmer_trasnsport_lie' in test and farm['farm_id'] < len(test['how_many_farmer_trasnsport_lie']) else '',
+                    #'農家0が嘘をついたときの開墾面積': sum(farm['capacity'].values()) if 'capacity' in farm else ''
+
             df_details = pd.DataFrame(test_details)
     
             # 目的関数のデータ収集
@@ -1341,7 +1399,13 @@ class FarmingSimulation:
                         'How_Many_Farmer_Trasnspor_Truth': farm.how_many_farmer_trasnsport_truth,
                         'How_Many_Farmer_Trasnspor_Lie': farm.how_many_farmer_trasnsport_lie,
                         'How_Many_Farmer_Land_Area_Truth': farm.how_many_farmer_land_area_truth,
-                        'How_Many_Farmer_Land_Area_Lie': farm.how_many_farmer_land_area_lie
+                        'How_Many_Farmer_Land_Area_Lie': farm.how_many_farmer_land_area_lie,
+                        'How_Many_Farmer_Schedule_Truth': farm.how_many_farmer_schedule_truth,
+                        'How_Many_Farmer_Schedule_Lie': farm.how_many_farmer_schedule_lie,
+                        'Weather_Pattern': farm.weather_pattern,
+                        'Farmers_Available_Schedule': farm.farmers_available_schedule,
+                        'not_i': farm.not_i,
+                        'remove_i': farm.remove_i
                     })
         farmers_df = pd.DataFrame(records)
         return farmers_df
@@ -1369,7 +1433,13 @@ class FarmingSimulation:
                     'How_Many_Farmer_Trasnsport_Truth': test.get('how_many_farmer_trasnsport_truth', None),
                     'How_Many_Farmer_Trasnsport_Lie': test.get('how_many_farmer_trasnsport_lie', None),
                     'How_Many_Farmer_Land_Area_Truth': test.get('how_many_farmer_land_area_truth', None),
-                    'How_Many_Farmer_Land_Area_Lie': test.get('how_many_farmer_land_area_lie', None)
+                    'How_Many_Farmer_Land_Area_Lie': test.get('how_many_farmer_land_area_lie', None),
+                    'How_Many_Farmer_Schedule_Truth': test.get('how_many_farmer_schedule_truth', None),
+                    'How_Many_Farmer_Schedule_Lie': test.get('how_many_farmer_schedule_lie', None),
+                    'Weather_Pattern': test.get('weather_pattern', None),
+                    'Farmers_Available_Schedule': test.get('farmers_available_schedule', None),
+                    '全体の社会-i': test.get('not_i', None),
+                    '-iの社会': test.get('remove_i', None)
                 })
         results_df = pd.DataFrame(records)
         return results_df
@@ -1401,7 +1471,13 @@ class FarmingSimulation:
                             'How_Many_Farmer_Trasnsport_Truth': test.get('how_many_farmer_trasnsport_truth', None),
                             'How_Many_Farmer_Trasnsport_Lie': test.get('how_many_farmer_trasnsport_lie', None),
                             'How_Many_Farmer_Land_Area_Truth': test.get('how_many_farmer_land_area_truth', None),
-                            'How_Many_Farmer_Land_Area_Lie': test.get('how_many_farmer_land_area_lie', None)
+                            'How_Many_Farmer_Land_Area_Lie': test.get('how_many_farmer_land_area_lie', None),
+                            'How_Many_Farmer_Schedule_Truth': test.get('how_many_farmer_schedule_truth', None),
+                            'How_Many_Farmer_Schedule_Lie': test.get('how_many_farmer_schedule_lie', None),
+                            'Weather_Pattern': test.get('weather_pattern', None),
+                            'Farmers_Available_Schedule': test.get('farmers_available_schedule', None),
+                            '全体の社会-i': test.get('not_i', None),
+                            '-iの社会': test.get('remove_i', None)
                         })
         farmer0_lie_df = pd.DataFrame(records)
         return farmer0_lie_df
