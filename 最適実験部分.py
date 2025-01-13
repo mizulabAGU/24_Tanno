@@ -184,8 +184,8 @@ class FarmingOptimizer:
             # メインの最適化モデルをリセットし、設定を行う
             self.reset_model()
             self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
-            vars = self.create_variables(boolean_number=False,farm_i=0,machine_count=0)  # 変数の作成
-            self.set_constraints(vars, farms, weather_forecast,farm_i=0,boolean_number=False)  # 制約の設定
+            vars = self.create_variables(boolean_number=False,farm_i=0,machine_count=0,farms=farms)  # 変数の作成
+            self.set_constraints(vars, farms, weather_forecast,farm_i=math.inf,boolean_number=False)  # 制約の設定
             self.set_objective(vars, farms)  # 目的関数の設定
             self.model.optimize()  # 最適化の実行
 
@@ -199,7 +199,6 @@ class FarmingOptimizer:
             for i in range(self.config.FARMERS):
                 Profit.append(self.config.COST_CULTIVATION * 
                             (sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2**self.config.DAYS))) 
-                                 
                             - self.config.COST_MOVE * sum(vars['t'][i, d].X for d in range(self.config.DAYS))
                             )
             print(f"最適化成功。現在の目的関数値: { self.model.ObjVal}")
@@ -226,12 +225,14 @@ class FarmingOptimizer:
                 farmi_land_area = farms[i].land_area
                 farms[i].machine_count = 0
                 farms[i].land_area = 0
-                #farms_without_i = [farm for farm in farms if farm.id != i]
+                farms_without_i = [farm for farm in farms if farm.id != i]
                 
                 # 農家iを除外した最適化モデルを設定
                 self.reset_model()
                 self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
-                vars_removed = self.create_variables(boolean_number=True,farm_i=i,machine_count=farms[i].machine_count)  # 変数の作成
+                #vars_removed = self.create_variables(boolean_number=True,farm_i=i,machine_count=farms[i].machine_count)  # 変数の作成
+                vars_removed = self.create_variables(boolean_number=False,farm_i=i,machine_count=farms[i].machine_count,farms=farms_without_i)  # 変数の作成
+                #self.set_constraints(vars_removed, farms, weather_forecast,farm_i=i,boolean_number=True)  # 制約の設定
                 self.set_constraints(vars_removed, farms, weather_forecast,farm_i=i,boolean_number=False)  # 制約の設定
                 self.set_objective(vars_removed, farms)  # 目的関数の設定
                 self.model.optimize()  # 最適化の実行
@@ -275,8 +276,8 @@ class FarmingOptimizer:
             self.model.setParam('TimeLimit', 30000)  # 時間制限を10分に設定
             self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
             self.model.setParam('NodefileStart', 0.5)
-            vars = self.create_variables(boolean_number=False,farm_i=0,machine_count=farms0_machine_count)#変数の作成
-            self.set_constraints(vars, farms, weather_forecast,farm_i=0,boolean_number=False)#制約の設定
+            vars = self.create_variables(boolean_number=False,farm_i=0,machine_count=farms0_machine_count,farms=farms)#変数の作成
+            self.set_constraints(vars, farms, weather_forecast,farm_i=math.inf,boolean_number=False)#制約の設定
             self.set_objective(vars, farms)#目的関数の設定
             self.model.optimize()#最適化の実行
 
@@ -331,7 +332,8 @@ class FarmingOptimizer:
                 # 農家iを除外した最適化モデルを設定
                 self.reset_model()
                 self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
-                vars_removed = self.create_variables(boolean_number=True,farm_i=i,machine_count=farms[i].machine_count)  # 変数の作成
+                farms_without_i = [farm for farm in farms if farm.id != i]
+                vars_removed = self.create_variables(boolean_number=False,farm_i=i,machine_count=farms[i].machine_count,farms=farms_without_i)  # 変数の作成
                 self.set_constraints(vars_removed, farms, weather_forecast,farm_i=i,boolean_number=True)  # 制約の設定
                 self.set_objective(vars_removed, farms)  # 目的関数の設定
                 self.model.optimize()  # 最適化の実行
@@ -424,7 +426,7 @@ class FarmingOptimizer:
         
         
 
-    def create_variables(self,boolean_number:bool,farm_i :int,machine_count:int) -> Dict:
+    def create_variables(self,boolean_number:bool,farm_i :int,machine_count:int,farms:List[Farm]) -> Dict:
         """最適化変数の作成"""
         vars = {
             's': {},  # 作業量変数
@@ -433,7 +435,7 @@ class FarmingOptimizer:
             'z': {}   # 天候変数
         }
         if boolean_number == True:
-            for i in range(self.config.FARMERS):
+            for i in len(farms):
                 for d in range(self.config.DAYS):
                     vars['s'][i, d] = self.model.addVar(vtype=gp.GRB.INTEGER)
                     vars['t'][i, d] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
@@ -442,6 +444,7 @@ class FarmingOptimizer:
                         self.model.addConstr(vars['t'][i, d] == 0)
                 for w in range(2 ** self.config.DAYS):
                     vars['c'][i, w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
+                    
             for w in range(2 ** self.config.DAYS):
                 vars['z'][w] = self.model.addVar(vtype=gp.GRB.CONTINUOUS)
             return vars
@@ -470,11 +473,13 @@ class FarmingOptimizer:
         # 農家ごとの制約
         for i in range(self.config.FARMERS):
             
+            #if  i == farm_i and boolean_number == True:
+            #    continue
             # 容量制約
             for w in range(2 ** self.config.DAYS):
                 self.model.addConstr(vars['c'][i, w] <= farms[i].land_area)  # c_{i,w}<=a_i
                 self.model.addConstr(
-                    vars['c'][i, w] <= gp.quicksum(
+                vars['c'][i, w] <= gp.quicksum(
                         W[w, d] * vars['s'][i, d] * farms[i].utility[d] * 
                         self.config.WORK_EFFICIENCY for d in range(self.config.DAYS)  # c_{i,w}<=Σw_d*s_{i,d}*n*e_{i,d}
                     )
@@ -485,11 +490,13 @@ class FarmingOptimizer:
                 self.model.addConstr(vars['s'][i, d] >= 0)  # s_{i,d}>=0
                 self.model.addConstr(vars['t'][i, d] >= 0)  # t_{i,d}>=0
                 self.model.addConstr(
-                    vars['t'][i, d] >= vars['s'][i, d] - farms[i].machine_count  # t_{i,d}>= s_{i,d}-m_i
+                vars['t'][i, d] >= vars['s'][i, d] - farms[i].machine_count  # t_{i,d}>= s_{i,d}-m_i
                 )
 
         # 総農機具数制約
         for d in range(self.config.DAYS):
+            #if i == farm_i and boolean_number == True:
+            #    continue
             self.model.addConstr(
                 gp.quicksum(vars['s'][i, d] for i in range(self.config.FARMERS)) 
                 == sum(farm.machine_count for farm in farms)  # Σs_{i,d}=Σm_i
