@@ -10,8 +10,9 @@ import seaborn as sns
 from pathlib import Path
 import pandas as pd
 import matplotlib.font_manager as fm
-#農機台数の平均が.233台数のときは
-# 設定クラス
+#農機台数が2台
+# 設定クラスg
+
 @dataclass
 class SimulationConfig:
     """シミュレーションの設定を保持するクラス"""
@@ -20,7 +21,7 @@ class SimulationConfig:
     TESTS: int = 30                                                      # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
     COST_CULTIVATION: float = (6.5+7.1)/2                                # 農地開墾を金額換算した値
-    WORK_EFFICIENCY: float = 10000                                    # 農機1台が1日に耕せる面積
+    WORK_EFFICIENCY: float = 10000                                       # 農機1台が1日に耕せる面積
     AREA_AVERAGE: float = 34000.0                                        # 農地面積の平均値
     NEW_FARMER_AREA_AVERAGE: float = 34000.0                             # 新規就農者の農地面積の平均値
     FARMER_UTILITY: float = 6/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
@@ -37,6 +38,7 @@ class SimulationConfig:
     WEATHER_RATE: float = 18/30                                          # 天気予報の確率
     THERE_IS_A_LIER: bool  = True                                        # 農家0が農機台数を虚偽申告するか否か
     MACHINE_COUNT_SUM : int = 25                                         # 農機台数の合計
+    LIER_NUMBER:int = 3                                                  # 嘘をついた農家の数
 
 # カスタム例外
 class OptimizationError(Exception):
@@ -115,8 +117,7 @@ class Farm:
         """農家の所持農機の割当（真値）"""
         if self.is_new:
             return 0
-        a = random.random()  
-        return 1
+        return 2
 
     def _generate_utility(self) -> List[int]:
         """各農家の効用を導出"""
@@ -272,13 +273,15 @@ class FarmingOptimizer:
 
 
             """農家0が嘘をついたときの獲得利益"""
-            farms0_machine_count = farms[0].machine_count
-            farms[0].machine_count = 0
+            lier_machine_count = []
+            for i in range(self.config.LIER_NUMBER):
+                lier_machine_count.append(farms[i].machine_count)
+                farms[i].machine_count = 0
             self.reset_model()
             self.model.setParam('TimeLimit', 30000)  # 時間制限を10分に設定
             self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
             self.model.setParam('NodefileStart', 0.5)
-            vars = self.create_variables(boolean_number=False,farm_i=0,machine_count=farms0_machine_count,farms=farms)#変数の作成
+            vars = self.create_variables(boolean_number=False,farm_i=0,machine_count=lier_machine_count[0],farms=farms)#変数の作成
             self.set_constraints(vars, farms, weather_forecast,farm_i=math.inf,boolean_number=False)#制約の設定
             self.set_objective(vars, farms)#目的関数の設定
             self.model.optimize()#最適化の実行
@@ -289,8 +292,8 @@ class FarmingOptimizer:
                 self.model.write("model.ilp")
                 print("診断情報が 'model.ilp' に保存されました。")
                 raise OptimizationError(f"農家0が嘘をついたときの最適化に失敗しました。ステータス: {self.model.status}")
-            Profit_lie=[]
-            Profitaaa=[]
+            Profit_lie=[]#本当の農家iの利益
+            Profitaaa=[]#正直申告したとと仮定したときの農家iの利益
             for i in range(self.config.FARMERS):
                 Profitaaa.append(self.config.COST_CULTIVATION * 
                             (sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2**self.config.DAYS))) 
@@ -307,20 +310,20 @@ class FarmingOptimizer:
                 )
             Profit_lie1 = []#農家i以外の獲得利益
             for i in range(self.config.FARMERS):
-                Profit_lie.append(self.model.ObjVal-Profitaaa[i])
-                if i==0:
-                    farmer0_profit_difference = 0
+                Profit_lie.append(Profitaaa[i])
+                farmer0_profit_difference = 0
+                if i < self.config.LIER_NUMBER:
                     for w in range(2 ** self.config.DAYS):
                         farmer0_profit_difference += gp.quicksum(
-                                W[w, d] *self.config.WORK_EFFICIENCY *farms0_machine_count * farms[i].utility[d] for d in range(self.config.DAYS)  # c_{i,w}<=Σw_d*s_{i,d}*n*e_{i,d}
+                                W[w, d] *self.config.WORK_EFFICIENCY *lier_machine_count[i] * farms[i].utility[d] for d in range(self.config.DAYS)  # c_{i,w}<=Σw_d*s_{i,d}*n*e_{i,d}
                         )
-                        
+                    
                     farmer0_profit_difference = gp.quicksum(farmer0_profit_difference * vars['z'][w].X for w in range(2 ** self.config.DAYS))
                     Profit_lie[i] = Profit_lie[i] + farmer0_profit_difference.getValue()
-                    if Profit_lie[i] > self.config.COST_CULTIVATION * farms[0].land_area:
-                        Profit_lie[i] = self.config.COST_CULTIVATION * farms[0].land_area
+                if Profit_lie[i] > self.config.COST_CULTIVATION * farms[0].land_area:
+                    Profit_lie[i] = self.config.COST_CULTIVATION * farms[0].land_area
             for i in range(self.config.FARMERS):
-                Profit_lie1.append(self.model.ObjVal-Profit_lie[i])
+                Profit_lie1.append(self.model.ObjVal-Profitaaa[i])
                 for d in range(self.config.DAYS):
                     how_many_farmer_trasnsport_lie[i][d] = vars['t'][i, d].X
                     how_many_farmer_land_area_lie[i][d] = sum(vars['c'][i, w].X*vars['z'][w].X for w in range(2 ** self.config.DAYS))
@@ -392,7 +395,8 @@ class FarmingOptimizer:
 
             #raise OptimizationError(f"農家0が嘘をついたときの最適化に失敗しました。ステータス: {self.model.status}")
             #farms[0].land_area = farms0_land_area
-            farms[0].machine_count = farms0_machine_count
+            for i in range(self.config.LIER_NUMBER):
+                farms[i].machine_count = lier_machine_count[i]
 
 
 
@@ -1282,11 +1286,10 @@ class FarmingSimulation:
             farm.initialize_random(new_farmer_rate)
             farms.append(farm)
         
+        
         # 新規就農者を作成
         for i in range(total_farmers):
-            if i == 0:
-                continue
-            if random.random() < new_farmer_rate:
+            if i >=total_farmers-total_farmers*new_farmer_rate:
                 farm = Farm(self.config, farm_id= i, is_new=True)
                 farm.initialize_random(new_farmer_rate)
                 farms[i] = farm
@@ -1306,7 +1309,6 @@ class FarmingSimulation:
         for rate, tests in self.results.items():
             filename = f"simulation_results_rate_{rate*100:.1f}%.xlsx"
             filepath = output_dir / filename
-    
             # テスト詳細のデータ収集
             test_details = []
             for test_num, test in enumerate(tests, start=1):
