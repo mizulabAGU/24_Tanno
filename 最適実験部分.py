@@ -15,27 +15,28 @@ import matplotlib.font_manager as fm
 @dataclass
 class SimulationConfig:
     """シミュレーションの設定を保持するクラス"""
-    FARMERS: int = 5                                                     # 参加農家の数
+    FARMERS: int = 10                                                    # 参加農家の数
     DAYS: int = 7                                                        # 対象期間の日数
-    TESTS: int = 1                                                       # シミュレーション実験回数
+    TESTS: int = 30                                                      # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
     COST_CULTIVATION: float = (6.5+7.1)/2                                # 農地開墾を金額換算した値
-    WORK_EFFICIENCY: float = 12000/14                                    # 農機1台が1日に耕せる面積
+    WORK_EFFICIENCY: float = 10000                                    # 農機1台が1日に耕せる面積
     AREA_AVERAGE: float = 34000.0                                        # 農地面積の平均値
-    NEW_FARMER_AREA_AVERAGE: float = 27000.0                             # 新規就農者の農地面積の平均値
-    FARMER_UTILITY: float = 4/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
-    AREA_RANGE: float = 10000.0                                          # 農地面積のばらつき幅
-    NEW_FARMER_RATE_STEP: float = 0.2                                    # 新規就農者率のステップ
+    NEW_FARMER_AREA_AVERAGE: float = 34000.0                             # 新規就農者の農地面積の平均値
+    FARMER_UTILITY: float = 6/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
+    AREA_RANGE: float = 0.0                                              # 農地面積のばらつき幅
+    NEW_FARMER_RATE_STEP: float = 0.1                                    # 新規就農者率のステップ
     UTILITY_START: int = 10                                              # 効用値の初期値
-    UTILITY_STEP: int = 20                                               # 効用値のステップ
+    UTILITY_STEP: int = 10                                               # 効用値のステップ
     UTILITY_MAX: int = 100                                               # 効用値の最大値
     NEW_FARMER_RATE_BEGIN: float = 0.00                                  # 新規就農者分析の初期割合
-    NEW_FARMER_RATE_END: float = 0.21                                    # 新規就農者分析の最終割合
+    NEW_FARMER_RATE_END: float = 1.0                                     # 新規就農者分析の最終割合
     NEW_FARMER_RATE_MIN: float = 0.0                                     # 新規就農者率の最小値
     NEW_FARMER_RATE_RANGE: float = 1/30                                  # 新規就農者の増加率
     NEW_FARMER_RATE_MAX: float = 0.21                                    # 新規就農者率の最大値
     WEATHER_RATE: float = 18/30                                          # 天気予報の確率
     THERE_IS_A_LIER: bool  = True                                        # 農家0が農機台数を虚偽申告するか否か
+    MACHINE_COUNT_SUM : int = 25                                         # 農機台数の合計
 
 # カスタム例外
 class OptimizationError(Exception):
@@ -114,18 +115,18 @@ class Farm:
         """農家の所持農機の割当（真値）"""
         if self.is_new:
             return 0
-        a = random.random()         
-        if a < 0.17:             
-            return 1         
-        elif a < 0.33:             
-            return 2        
-        else:             
-            return 3
+        a = random.random()  
+        return 1
 
     def _generate_utility(self) -> List[int]:
         """各農家の効用を導出"""
-        return [1 if random.random() < self.config.FARMER_UTILITY else 0 
-                for _ in range(self.config.DAYS)]
+        farmer_utility = []
+        for i in range(self.config.DAYS):
+            if random.random() <= self.config.FARMER_UTILITY:
+                farmer_utility.append(1)
+            else:
+                farmer_utility.append(0)
+        return farmer_utility
 
 
 class lier_Farm(Farm):
@@ -178,9 +179,12 @@ class FarmingOptimizer:
         how_many_farmer_schedule_lie = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
         farmers_available_schedule = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
 
-        for d in range(self.config.DAYS):
-            for farm in farms:
+        for farm in farms:
+            for d in range(self.config.DAYS):
                 farmers_available_schedule[farm.id][d] = farm.utility[d]
+        
+        for d in range(self.config.DAYS):
+            
             # メインの最適化モデルをリセットし、設定を行う
             self.reset_model()
             self.model.setParam('OutputFlag', 0)  # ログ出力を無効にする
@@ -267,8 +271,6 @@ class FarmingOptimizer:
             print(f"全農家の利得(社会的余剰): {sum(Farmer_profit)}")
 
 
-
-
             """農家0が嘘をついたときの獲得利益"""
             farms0_machine_count = farms[0].machine_count
             farms[0].machine_count = 0
@@ -292,15 +294,29 @@ class FarmingOptimizer:
             for i in range(self.config.FARMERS):
                 Profitaaa.append(self.config.COST_CULTIVATION * 
                             (sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2**self.config.DAYS))) 
-                                 
                             - self.config.COST_MOVE * sum(vars['t'][i, d].X for d in range(self.config.DAYS))
                             )
+            W = self.weather.generate_weather_patterns()
+            for w in range(2 ** self.config.DAYS):
+                self.model.addConstr(vars['c'][i, w] <= farms[i].land_area)  # c_{i,w}<=a_i
+                self.model.addConstr(
+                vars['c'][i, w] <= gp.quicksum(
+                        W[w, d] * vars['s'][i, d] * farms[i].utility[d] * 
+                        self.config.WORK_EFFICIENCY for d in range(self.config.DAYS)  # c_{i,w}<=Σw_d*s_{i,d}*n*e_{i,d}
+                    )
+                )
             Profit_lie1 = []#農家i以外の獲得利益
             for i in range(self.config.FARMERS):
                 Profit_lie.append(self.model.ObjVal-Profitaaa[i])
                 if i==0:
-                    farmer0_profit_difference = sum(self.config.COST_CULTIVATION *self.config.WORK_EFFICIENCY*farms0_machine_count * actual_weather[d]*farms[0].utility[d] for d in range(self.config.DAYS))
-                    Profit_lie[i] = Profit_lie[i] + farmer0_profit_difference
+                    farmer0_profit_difference = 0
+                    for w in range(2 ** self.config.DAYS):
+                        farmer0_profit_difference += gp.quicksum(
+                                W[w, d] *self.config.WORK_EFFICIENCY *farms0_machine_count * farms[i].utility[d] for d in range(self.config.DAYS)  # c_{i,w}<=Σw_d*s_{i,d}*n*e_{i,d}
+                        )
+                        
+                    farmer0_profit_difference = gp.quicksum(farmer0_profit_difference * vars['z'][w].X for w in range(2 ** self.config.DAYS))
+                    Profit_lie[i] = Profit_lie[i] + farmer0_profit_difference.getValue()
                     if Profit_lie[i] > self.config.COST_CULTIVATION * farms[0].land_area:
                         Profit_lie[i] = self.config.COST_CULTIVATION * farms[0].land_area
             for i in range(self.config.FARMERS):
@@ -470,12 +486,14 @@ class FarmingOptimizer:
             prod = self._calculate_weather_probability(w, weather_forecast, W)
             self.model.addConstr(vars['z'][w] == prod)
 
+        W = self.weather.generate_weather_patterns()
+
         # 農家ごとの制約
         for i in range(self.config.FARMERS):
             
             #if  i == farm_i and boolean_number == True:
             #    continue
-            # 容量制約
+            # 容量制約W = self.weather.generate_weather_patterns()
             for w in range(2 ** self.config.DAYS):
                 self.model.addConstr(vars['c'][i, w] <= farms[i].land_area)  # c_{i,w}<=a_i
                 self.model.addConstr(
@@ -554,11 +572,6 @@ class FarmingOptimizer:
             'farmers_available_schedule' : [],
             'not_i': [],
             'remove_i': []
-
-
-
-
-
         }
         
         
@@ -659,6 +672,7 @@ class FarmingSimulation:
             self.results[rate] = []
             for test_num in range(1, self.config.TESTS + 1):
                 print(f"\n新規就農者率: {rate*100:.1f}%, テスト番号: {test_num}")
+                SUM_MACHINE = self.config.MACHINE_COUNT_SUM
                 
                 # 農家のリストを作成
                 farms = self._create_farms(self.config, rate)
@@ -780,7 +794,7 @@ class FarmingSimulation:
             print(f"テスト {test + 1}/{self.config.TESTS} 実行中...")
             
             # 農家データの生成
-            farms = self._create_farms(self.config, new_farmer_rate)
+            farms = self._create_farms(self.config)
             
             # 農家データの出力
             for farm in farms:
@@ -797,10 +811,11 @@ class FarmingSimulation:
     def _initialize_farms(self, new_farmer_rate: float) -> List[Farm]:
         """農家リストを初期化"""
         farms = [Farm(self.config, farm_id=i) for i in range(self.config.FARMERS)]
-        
+        machine_counts = self._generate4_machine_count()
         # 新規就農者の割合に基づいて農家を初期化
         for farm in farms:
             farm.initialize_random(new_farmer_rate)
+            #farm.machine_count = machine_counts[farm.id]
         
         return farms
 
@@ -1488,6 +1503,57 @@ class FarmingSimulation:
                         })
         farmer0_lie_df = pd.DataFrame(records)
         return farmer0_lie_df
+
+    def _generate4_machine_count(self) -> List[int]:
+        """
+        各農家に0, 1, 2, 3台の農機を割り当て、全農家の合計が MACHINE_COUNT_SUM になるようにする。
+        農家数と MACHINE_COUNT_SUM の条件を確認し、割り当てを行う。
+        """
+        farmers = self.config.FARMERS
+        total_machines = self.config.MACHINE_COUNT_SUM
+        print(f"農家数: {farmers}, 合計農機数: {total_machines}")
+
+        max_machines = farmers * 3
+        if total_machines > max_machines:
+            raise ValueError(f"合計農機数 {total_machines} は農家数 {farmers} の最大値 {max_machines} を超えています。")
+
+        # 各農家に最低限の農機数（0台）を割り当て
+        machine_counts = [0] * farmers
+        remaining_machines = total_machines
+
+        # for i in range(farmers):
+        #     if remaining_machines <= 0:
+        #         break
+        #     # 各農家に割り当て可能な最大数を計算
+        #     assign = min(3, remaining_machines)
+        #     machine_counts[i] = assign
+        #     remaining_machines -= assign
+
+        # 残りの農機がある場合、ランダムに再配分
+        while remaining_machines > 0:
+            for i in range(farmers):
+                if machine_counts[i] < 3 and remaining_machines > 0:
+                    machine_counts[i] += 1
+                    remaining_machines -= 1
+                    if remaining_machines == 0:
+                        break
+
+        # 農家ごとの農機数が0,1,2,3の範囲内であることを確認
+        for count in machine_counts:
+            if count not in [0, 1, 2, 3]:
+                raise ValueError("農機数の割り当てに誤りがあります。各農家の農機数は0, 1, 2, 3でなければなりません。")
+
+        return machine_counts
+
+    # def initialize_farms(self, farms: List[Farm]):
+    #     """
+    #     農家の初期設定を行う。
+    #     各農家に農機数を割り当てる。
+    #     """
+    #     machine_counts = self._generate4_machine_count()
+    #     for i, farm in enumerate(farms):
+    #         farm.machine_count = machine_counts[i]
+    #     print(f"各農家に割り当てられた農機数: {machine_counts}")
 
 
 def setup_output_directory():
