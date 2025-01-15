@@ -18,7 +18,7 @@ class SimulationConfig:
     """シミュレーションの設定を保持するクラス"""
     FARMERS: int = 10                                                    # 参加農家の数
     DAYS: int = 7                                                        # 対象期間の日数
-    TESTS: int = 30                                                      # シミュレーション実験回数
+    TESTS: int = 100                                                      # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
     COST_CULTIVATION: float = (6.5+7.1)/2                                # 農地開墾を金額換算した値
     WORK_EFFICIENCY: float = 10000                                       # 農機1台が1日に耕せる面積
@@ -38,7 +38,7 @@ class SimulationConfig:
     WEATHER_RATE: float = 18/30                                          # 天気予報の確率
     THERE_IS_A_LIER: bool  = True                                        # 農家0が農機台数を虚偽申告するか否か
     MACHINE_COUNT_SUM : int = 25                                         # 農機台数の合計
-    LIER_NUMBER:int = 3                                                  # 嘘をついた農家の数
+    LIER_NUMBER:int = 1                                                  # 嘘をついた農家の数
 
 # カスタム例外
 class OptimizationError(Exception):
@@ -47,12 +47,12 @@ class OptimizationError(Exception):
         super().__init__(message)
         print("最適化計算部分でエラー発生")
 
-def generate_random_with_mean(target_mean):
-    # 乱数を生成（0から1の範囲）
-    random_value = random.random()  # 0から1の乱数を生成
-    # スケーリングして平均がターゲットになるように調整
-    adjusted_value = random_value * target_mean / 0.5  # 0.5は0から1の平均
-    return adjusted_value
+# def generate_random_with_mean(target_mean):
+#     # 乱数を生成（0から1の範囲）
+#     random_value = random.random()  # 0から1の乱数を生成
+#     # スケーリングして平均がターゲットになるように調整
+#     adjusted_value = random_value * target_mean / 0.5  # 0.5は0から1の平均
+#     return adjusted_value
 
 # 天候管理クラス
 class Weather:
@@ -60,16 +60,30 @@ class Weather:
         self.days = days
         self.config = SimulationConfig()
 
-    def generate_forecast(self) -> List[float]:
+    def generate_forecast(self,seed:int) -> List[float]:
         """天気予報の生成"""
-        return [generate_random_with_mean(self.config.WEATHER_RATE) for _ in range(self.days)]
+        random.seed(seed)
+        np.random.seed(seed)
+        weather = []
+        for d in range(self.days):
+            weather.append(self.config.WEATHER_RATE)
+        return weather
+        #return [random.random() for _ in range(self.days)]
 
-    def generate_actual_weather(self, forecast: List[float]) -> List[int]:
+    def generate_actual_weather(self, forecast: List[float],seed:int) -> List[int]:
         """実際の天気の生成"""
-        return [0 if random.random() < prob else 1 for prob in forecast]
+        random.seed(seed)
+        np.random.seed(seed)
+        weather = []
+        for d in range(self.days):
+            weather.append(self.config.WEATHER_RATE)
+        return weather
+        #return [0 if random.random() < prob else 1 for prob in forecast]
 
-    def generate_weather_patterns(self) -> Dict[Tuple[int, int], int]:
+    def generate_weather_patterns(self,seed:int) -> Dict[Tuple[int, int], int]:
         """天候パターンの生成"""
+        random.seed(seed)
+        np.random.seed(seed)
         W = {}
         for d in range(2 ** self.days):
             w_bin = bin(d)[2:].zfill(self.days)
@@ -80,7 +94,7 @@ class Weather:
 
 class Farm:
     """農家クラス"""
-    def __init__(self, config, farm_id, is_new=False):
+    def __init__(self, config, farm_id,seed, is_new=False):
         self.config = config
         self.id = farm_id
         self.land_area = 0.0  # 農地面積の初期化
@@ -88,9 +102,11 @@ class Farm:
         self.is_new = is_new  # 新規就農者フラグ
         self.utility = []
         self.cultivated_area = 0.0  # 開墾面積の初期化
-
-    def initialize_random(self, new_farmer_rate: float):
+        self.seed = seed
+    def initialize_random(self, new_farmer_rate: float,seed:int):
         """農家データのランダム初期化"""
+        random.seed(self.seed)
+        np.random.seed(self.seed)
         if self.is_new:
             self.land_area = self._generate_new_farmer_land_area()  # 新規就農者の農地面積を生成
         else:
@@ -115,28 +131,23 @@ class Farm:
 
     def _generate_machine_count(self, new_farmer_rate: float) -> int:
         """農家の所持農機の割当（真値）"""
+        
         if self.is_new:
             return 0
-        return 2
+        return 1
 
     def _generate_utility(self) -> List[int]:
         """各農家の効用を導出"""
         farmer_utility = []
-        for i in range(self.config.DAYS):
+        for d in range(self.config.DAYS):
+            random.seed(self.seed+self.id)
+            np.random.seed(self.seed+self.id)
             if random.random() <= self.config.FARMER_UTILITY:
                 farmer_utility.append(1)
             else:
                 farmer_utility.append(0)
         return farmer_utility
 
-
-class lier_Farm(Farm):
-    def __init__(self, config: SimulationConfig):
-        super().__init__(config)
-        self.config = config
-        self.land_area: float = 0
-        self.machine_count: int = 0
-        self.utility: List[int] = []
 
 
 class FarmingOptimizer:
@@ -299,7 +310,7 @@ class FarmingOptimizer:
                             (sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2**self.config.DAYS))) 
                             - self.config.COST_MOVE * sum(vars['t'][i, d].X for d in range(self.config.DAYS))
                             )
-            W = self.weather.generate_weather_patterns()
+            W = self.weather.generate_weather_patterns(seed)
             for w in range(2 ** self.config.DAYS):
                 self.model.addConstr(vars['c'][i, w] <= farms[i].land_area)  # c_{i,w}<=a_i
                 self.model.addConstr(
@@ -346,6 +357,10 @@ class FarmingOptimizer:
                 farmi_land_area = farms[i].land_area
                 farms[i].machine_count = 0
                 farms[i].land_area = 0
+                for idx in range(self.config.FARMERS):
+                    print(farms[idx].machine_count)
+                for idx in range(self.config.FARMERS):
+                    print(farms[idx].land_area)
                 #farms_without_i = [farm for farm in farms if farm.id != i]
                 
                 # 農家iを除外した最適化モデルを設定
@@ -358,7 +373,6 @@ class FarmingOptimizer:
                 self.model.optimize()  # 最適化の実行
                 farms[i].machine_count = farmi_machine_count
                 farms[i].land_area = farmi_land_area
-
                 # 最適化が成功したか確認
                 if self.model.status != gp.GRB.OPTIMAL:
                     raise OptimizationError(f"農家0が嘘をついたときの農家{i}を除外した最適化に失敗しました。ステータス: {self.model.status}")
@@ -483,14 +497,14 @@ class FarmingOptimizer:
 
     def set_constraints(self, vars: Dict, farms: List[Farm], weather_forecast: List[float],farm_i:int,boolean_number:bool):
         """制約条件の設定"""
-        W = self.weather.generate_weather_patterns()
+        W = self.weather.generate_weather_patterns(seed)
         
         # 天候制約
         for w in range(2 ** self.config.DAYS):
             prod = self._calculate_weather_probability(w, weather_forecast, W)
             self.model.addConstr(vars['z'][w] == prod)
 
-        W = self.weather.generate_weather_patterns()
+        W = self.weather.generate_weather_patterns(seed)
 
         # 農家ごとの制約
         for i in range(self.config.FARMERS):
@@ -664,27 +678,29 @@ class FarmingSimulation:
         self.optimizer = FarmingOptimizer(config)
         self.results = {}  # 新規就農率ごとのテスト結果を格納する辞書
 
-    def run(self, seed: int):
-        random.seed(seed)
-        np.random.seed(seed)
+    def run(self,TEST_NUMBER:int,Seeds_value):
         
         rates = np.arange(self.config.NEW_FARMER_RATE_BEGIN, 
                           self.config.NEW_FARMER_RATE_END + self.config.NEW_FARMER_RATE_STEP, 
                           self.config.NEW_FARMER_RATE_STEP)
-        
+        counter = 0#参照するシード値のカウンター、新規就農者率にかかわらずテスト回数に依存してシード値を設定できるように
         for rate in rates:
             self.results[rate] = []
             for test_num in range(1, self.config.TESTS + 1):
+                seed = Seeds_value[0][test_num + self.config.FARMERS]
+                random.seed(seed)
+                np.random.seed(seed)
+
                 print(f"\n新規就農者率: {rate*100:.1f}%, テスト番号: {test_num}")
                 SUM_MACHINE = self.config.MACHINE_COUNT_SUM
                 
                 # 農家のリストを作成
-                farms = self._create_farms(self.config, rate)
+                farms = self._create_farms(self.config, rate,seed)
                 
                 # 天気予報と実際の天気を生成
-                forecast = self.optimizer.weather.generate_forecast()
-                actual_weather = self.optimizer.weather.generate_actual_weather(forecast)
-                W = self.optimizer.weather.generate_weather_patterns()
+                forecast = self.optimizer.weather.generate_forecast(seed)
+                actual_weather = self.optimizer.weather.generate_actual_weather(forecast,seed)
+                W = self.optimizer.weather.generate_weather_patterns(seed)
                 
                 # 最適化を実行
                 test_result = self.optimizer.optimize(farms, forecast, actual_weather, W, Calculate_FARMER0_profit=True)
@@ -812,13 +828,13 @@ class FarmingSimulation:
             except Exception as e:
                 print(f"最適化エラー: {e}")
 
-    def _initialize_farms(self, new_farmer_rate: float) -> List[Farm]:
+    def _initialize_farms(self, new_farmer_rate: float,seed:int) -> List[Farm]:
         """農家リストを初期化"""
-        farms = [Farm(self.config, farm_id=i) for i in range(self.config.FARMERS)]
+        farms = [Farm(self.config, farm_id=i,seed=seed) for i in range(self.config.FARMERS)]
         machine_counts = self._generate4_machine_count()
         # 新規就農者の割合に基づいて農家を初期化
         for farm in farms:
-            farm.initialize_random(new_farmer_rate)
+            farm.initialize_random(new_farmer_rate,seed)
             #farm.machine_count = machine_counts[farm.id]
         
         return farms
@@ -1273,7 +1289,7 @@ class FarmingSimulation:
         print(f"このときの支払額平均: {self.summary[best_rate]['avg_payment_lie']:.2f}")
         print(f"このときの農家0の輸送回数平均: {self.summary[best_rate]['avg_how_many_farmer_trasnsport_lie']:.2f}")
 
-    def _create_farms(self, config: SimulationConfig, new_farmer_rate: float) -> List[Farm]:
+    def _create_farms(self, config: SimulationConfig, new_farmer_rate: float,seed:int) -> List[Farm]:
         """農家リストを作成"""
         total_farmers = config.FARMERS
         new_farmers_count = int(total_farmers * new_farmer_rate)
@@ -1282,16 +1298,16 @@ class FarmingSimulation:
         
         # 既存農家を作成
         for i in range(total_farmers):
-            farm = Farm(config, farm_id=i, is_new=False)
-            farm.initialize_random(new_farmer_rate)
+            farm = Farm(config, farm_id=i,seed=seed, is_new=False)
+            farm.initialize_random(new_farmer_rate,seed)
             farms.append(farm)
         
         
         # 新規就農者を作成
         for i in range(total_farmers):
             if i >=total_farmers-total_farmers*new_farmer_rate:
-                farm = Farm(self.config, farm_id= i, is_new=True)
-                farm.initialize_random(new_farmer_rate)
+                farm = Farm(self.config, farm_id= i,seed=seed, is_new=True)
+                farm.initialize_random(new_farmer_rate,seed)
                 farms[i] = farm
 
         return farms
@@ -1563,9 +1579,10 @@ def setup_output_directory():
     output_dir = Path('simulation_results')
     output_dir.mkdir(exist_ok=True)
     return output_dir
-
 def main():
     """メイン実行関数"""
+    global seed 
+    seed = 0 
     # シード値の読み込み
     TEST_NUMBER = 0
     Seeds_value = pd.read_csv('seeds.csv', header = None).values.tolist()
@@ -1588,7 +1605,8 @@ def main():
         # シミュレーションの実行
         simulation = FarmingSimulation(config)
         seedValue = Seeds_value[0][TEST_NUMBER]
-        simulation.run(seedValue)
+        seed = seedValue
+        simulation.run(TEST_NUMBER,Seeds_value)
         TEST_NUMBER += 1
         print("シミュレーション完了")
         
