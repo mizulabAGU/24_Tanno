@@ -39,8 +39,9 @@ class DataVisualizer:
             try:
                 # ファイル名からパーセンテージを抽出
                 percentage = self.extract_percentage(file)
-                # Excelファイルを読み込み、必要な列を取得
+                # ExcelファイルのA列とF列だけを読み込み、必要な列を取得
                 df = pd.read_excel(file, usecols=[0, 5], header=None)
+                # A列を'A'、F列を'F'として列名を設定
                 df.columns = ['A', 'F']
                 # A列でグループ化し、F列の合計を計算
                 sums = df.groupby('A')['F'].sum().reindex(range(1, 101), fill_value=0).tolist()
