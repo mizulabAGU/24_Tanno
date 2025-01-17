@@ -78,16 +78,36 @@ class DataVisualizer:
         """
         try:
             # パーセンテージ順にデータを並べ替え
-            data_to_plot = [self.data[p] for p in sorted(self.percentages)]
             sorted_percentages = sorted(self.percentages)
-            plt.figure(figsize=(12, 6))
+            data_to_plot = [self.data[p] for p in sorted_percentages]
+
+            plt.figure(figsize=(20, 10))  # グラフのサイズを大きく設定
             # 箱ひげ図を作成
-            plt.boxplot(data_to_plot, positions=sorted_percentages, widths=5)
-            plt.xlabel('パーセンテージ')
-            plt.ylabel('F列の合計値')
-            plt.title('シミュレーション結果の箱ひげ図')
+            box = plt.boxplot(data_to_plot, positions=sorted_percentages, widths=5, patch_artist=True,
+                             boxprops=dict(facecolor='lightblue', color='blue'),
+                             medianprops=dict(color='red'),
+                             whiskerprops=dict(color='blue'),
+                             capprops=dict(color='blue'),
+                             flierprops=dict(color='blue', markeredgecolor='blue'))
+            
+            # 横軸のラベル設定
+            plt.xlabel('percentage', fontsize=14)
+            # 縦軸のラベル設定
+            plt.ylabel('sum of F', fontsize=14)
+            # グラフのタイトル設定
+            plt.title('simulation result boxplot', fontsize=16)
+            
+            # 1) 各ボックスの中央値をプロットに表示
+            for i, percentage in enumerate(sorted_percentages):
+                median = box['medians'][i].get_ydata()[0]
+                plt.text(percentage, median, f'{median:.2f}', horizontalalignment='center', 
+                         verticalalignment='bottom', fontsize=8, color='black')
+
+            # 2) X軸とY軸のメモリに補助線を追加
+            plt.grid(True, which='both', axis='both', linestyle='--', linewidth=0.5, alpha=0.7)
+
             # X軸の目盛りをパーセンテージ表示に設定
-            plt.xticks(sorted_percentages, [f"{p}%" for p in sorted_percentages], rotation=45)
+            plt.xticks(sorted_percentages, [f"{p}%" for p in sorted_percentages], rotation=90)
             plt.tight_layout()
             # 箱ひげ図を画像として保存
             plt.savefig(os.path.join(self.directory, 'simulation_results_boxplot.png'))
