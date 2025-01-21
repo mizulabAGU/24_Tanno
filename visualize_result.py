@@ -92,11 +92,11 @@ class DataVisualizer:
                              flierprops=dict(color='blue', markeredgecolor='blue'))
             
             # 横軸のラベル設定
-            plt.xlabel('新規就農者率 (%)', fontsize=14)
+            plt.xlabel('new farmer rate (%)', fontsize=14)
             # 縦軸のラベル設定
-            plt.ylabel('F列の合計値', fontsize=14)
+            plt.ylabel('sum of F', fontsize=14)
             # グラフのタイトル設定
-            plt.title('シミュレーション結果の箱ひげ図と平均値の折れ線グラフ', fontsize=16)
+            plt.title('simulation result boxplot with mean', fontsize=16)
             
             # 1) 各ボックスの中央値をプロットに表示
             for i, percentage in enumerate(sorted_percentages):
@@ -106,7 +106,7 @@ class DataVisualizer:
 
             # 2) 各ボックスの平均値を星で表示し、その値をラベルとして出力
             means = [np.mean(self.data[p]) for p in sorted_percentages]
-            plt.plot(sorted_percentages, means, linestyle='-', marker='*', markersize=12, color='green', label='平均値')
+            plt.plot(sorted_percentages, means, linestyle='-', marker='*', markersize=12, color='green', label='mean')
             for i, percentage in enumerate(sorted_percentages):
                 mean = means[i]
                 plt.text(percentage, mean, f'{mean:.2f}', horizontalalignment='center', 
