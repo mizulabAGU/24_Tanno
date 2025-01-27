@@ -18,10 +18,10 @@ class SimulationConfig:
     """シミュレーションの設定を保持するクラス"""
     FARMERS: int = 10                                                    # 参加農家の数
     DAYS: int = 7                                                        # 対象期間の日数
-    TESTS: int = 100                                                      # シミュレーション実験回数
+    TESTS: int = 1                                                      # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
     COST_CULTIVATION: float = (6.5+7.1)/2                                # 農地開墾を金額換算した値
-    WORK_EFFICIENCY: float = 8000                                       # 農機1台が1日に耕せる面積
+    WORK_EFFICIENCY: float = 12000                                       # 農機1台が1日に耕せる面積
     AREA_AVERAGE: float = 34000.0                                        # 農地面積の平均値
     NEW_FARMER_AREA_AVERAGE: float = 34000.0                             # 新規就農者の農地面積の平均値
     FARMER_UTILITY: float = 6/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
@@ -35,10 +35,10 @@ class SimulationConfig:
     NEW_FARMER_RATE_MIN: float = 0.0                                     # 新規就農者率の最小値
     NEW_FARMER_RATE_RANGE: float = 1/30                                  # 新規就農者の増加率
     NEW_FARMER_RATE_MAX: float = 0.21                                    # 新規就農者率の最大値
-    WEATHER_RATE: float = 0.7                                            # 天気予報の確率
+    WEATHER_RATE: float = 0.3                                            # 天気予報の確率
     THERE_IS_A_LIER: bool  = True                                        # 農家0が農機台数を虚偽申告するか否か
     MACHINE_COUNT_SUM : int = 25                                         # 農機台数の合計
-    MACHINE_COUNT : int = 1                                              # 農機台数
+    MACHINE_COUNT : int = 2                                              # 農機台数
     LIER_NUMBER:int = 1                                                  # 嘘をついた農家の数
 
 # カスタム例外
@@ -183,6 +183,7 @@ class FarmingOptimizer:
         weather_pattern = weather_forecast
         not_i = []
         remove_i = []
+        Profit_non_simulation = []
         # リストの初期化を修正
         how_many_farmer_trasnsport_truth = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
         how_many_farmer_trasnsport_lie = [[0] * self.config.DAYS for _ in range(self.config.FARMERS)]
@@ -218,6 +219,16 @@ class FarmingOptimizer:
                             (sum(vars['c'][i, w].X * vars['z'][w].X for w in range(2**self.config.DAYS))) 
                             - self.config.COST_MOVE * sum(vars['t'][i, d].X for d in range(self.config.DAYS))
                             )
+                W = self.weather.generate_weather_patterns(seed)
+                fuckoff=0
+                for w in range(2**self.config.DAYS):
+                    fuck = sum(W[w, d] * self.config.MACHINE_COUNT*self.config.WORK_EFFICIENCY* farms[i].utility[d] for d in range(self.config.DAYS))
+                    if fuck >self.config.AREA_AVERAGE:
+                        fuckoff += self.config.COST_CULTIVATION*self.config.AREA_AVERAGE*vars['z'][w].X
+                    else:
+                        fuckoff += self.config.COST_CULTIVATION*gp.quicksum(W[w, d] * self.config.MACHINE_COUNT*self.config.WORK_EFFICIENCY* farms[i].utility[d] for d in range(self.config.DAYS))*vars['z'][w].X
+                Profit_non_simulation.append(fuckoff)
+                fuckoff = 0
             print(f"最適化成功。現在の目的関数値: { self.model.ObjVal}")
             
             
@@ -443,8 +454,9 @@ class FarmingOptimizer:
                 'how_many_farmer_schedule_lie': how_many_farmer_schedule_lie,
                 'weather_pattern': weather_pattern,
                 'farmers_available_schedule' : farmers_available_schedule,
-                'not_i': not_i,
-                'remove_i': remove_i
+                'not_i': not_i, 
+                'remove_i': remove_i,
+                'Profit_non_simulation': Profit_non_simulation
             }
             
             return results
@@ -580,7 +592,9 @@ class FarmingOptimizer:
             'weather_pattern': [],
             'farmers_available_schedule' : [],
             'not_i': [],
-            'remove_i': []
+            'remove_i': [],
+            'Profit_non_simulation': []
+
         }
         
         
@@ -723,6 +737,7 @@ class FarmingSimulation:
                             '農家0が嘘をついたときの農家0の利用可能なスケジュール': test_result.get('farmers_available_schedule', [])[farm.id] if 'farmers_available_schedule' in test_result and farm.id < len(test_result['farmers_available_schedule']) else '',
                             '全体の社会-i': test_result.get('not_i', [])[farm.id] if 'not_i' in test_result and farm.id < len(test_result['not_i']) else '',
                             '-iの社会': test_result.get('remove_i', [])[farm.id] if 'remove_i' in test_result and farm.id < len(test_result['remove_i']) else '',
+                            '非シミュレーションの利益': test_result.get('Profit_non_simulation', [])[farm.id] if 'Profit_non_simulation' in test_result and farm.id < len(test_result['Profit_non_simulation']) else '',
                         }
                         farm_results.append(farm_result)
 
@@ -893,6 +908,7 @@ class FarmingSimulation:
             'farmers_available_schedule': [test['farmers_available_schedule'] for test in tests],
             'not_i': [test['not_i'] for test in tests],
             'remove_i': [test['remove_i'] for test in tests],
+            'Profit_non_simulation': [test['Profit_non_simulation'] for test in tests],
         }
 
         # 農家0の平均利得を計算
@@ -1340,7 +1356,8 @@ class FarmingSimulation:
                         '天気予報': farm.get('天気予報', ''),
                         '農家0が嘘をついたときの農家0の利用可能なスケジュール': farm.get('農家0が嘘をついたときの農家0の利用可能なスケジュール', ''),
                         '全体の社会-i': farm.get('全体の社会-i', ''),
-                        '-iの社会': farm.get('-iの社会', '')
+                        '-iの社会': farm.get('-iの社会', ''),
+                        '非シミュレーションの利益': farm.get('非シミュレーションの利益', '')
                     })
                     #'売上': test['Profit_truth'][farm['farm_id']] if 'Profit_truth' in test and farm['farm_id'] < len(test['Profit_truth']) else '',
                     #    '支払額': test['Farmer_payments_truth'][farm['farm_id']] if 'Farmer_payments_truth' in test and farm['farm_id'] < len(test['Farmer_payments_truth']) else '',
@@ -1436,7 +1453,8 @@ class FarmingSimulation:
                         'Weather_Pattern': farm.weather_pattern,
                         'Farmers_Available_Schedule': farm.farmers_available_schedule,
                         'not_i': farm.not_i,
-                        'remove_i': farm.remove_i
+                        'remove_i': farm.remove_i,
+                        'Profit_non_simulation': farm.Profit_non_simulation
                     })
         farmers_df = pd.DataFrame(records)
         return farmers_df
@@ -1470,7 +1488,8 @@ class FarmingSimulation:
                     'Weather_Pattern': test.get('weather_pattern', None),
                     'Farmers_Available_Schedule': test.get('farmers_available_schedule', None),
                     '全体の社会-i': test.get('not_i', None),
-                    '-iの社会': test.get('remove_i', None)
+                    '-iの社会': test.get('remove_i', None),
+                    '非シミュレーションの利益': test.get('Profit_non_simulation', [])[0] if test.get('Profit_non_simulation') else None
                 })
         results_df = pd.DataFrame(records)
         return results_df
@@ -1508,7 +1527,8 @@ class FarmingSimulation:
                             'Weather_Pattern': test.get('weather_pattern', None),
                             'Farmers_Available_Schedule': test.get('farmers_available_schedule', None),
                             '全体の社会-i': test.get('not_i', None),
-                            '-iの社会': test.get('remove_i', None)
+                            '-iの社会': test.get('remove_i', None),
+                            '非シミュレーションの利益': test.get('Profit_non_simulation', [])[0] if test.get('Profit_non_simulation') else None
                         })
         farmer0_lie_df = pd.DataFrame(records)
         return farmer0_lie_df
