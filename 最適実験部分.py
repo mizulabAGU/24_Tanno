@@ -18,10 +18,10 @@ class SimulationConfig:
     """シミュレーションの設定を保持するクラス"""
     FARMERS: int = 10                                                    # 参加農家の数
     DAYS: int = 7                                                        # 対象期間の日数
-    TESTS: int = 1                                                      # シミュレーション実験回数
+    TESTS: int = 100                                                      # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
     COST_CULTIVATION: float = (6.5+7.1)/2                                # 農地開墾を金額換算した値
-    WORK_EFFICIENCY: float = 12000                                       # 農機1台が1日に耕せる面積
+    WORK_EFFICIENCY: float = 8000                                       # 農機1台が1日に耕せる面積
     AREA_AVERAGE: float = 34000.0                                        # 農地面積の平均値
     NEW_FARMER_AREA_AVERAGE: float = 34000.0                             # 新規就農者の農地面積の平均値
     FARMER_UTILITY: float = 6/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
@@ -35,11 +35,13 @@ class SimulationConfig:
     NEW_FARMER_RATE_MIN: float = 0.0                                     # 新規就農者率の最小値
     NEW_FARMER_RATE_RANGE: float = 1/30                                  # 新規就農者の増加率
     NEW_FARMER_RATE_MAX: float = 0.21                                    # 新規就農者率の最大値
-    WEATHER_RATE: float = 0.3                                            # 天気予報の確率
+    WEATHER_RATE: float = 0.7                                            # 天気予報の確率
     THERE_IS_A_LIER: bool  = True                                        # 農家0が農機台数を虚偽申告するか否か
     MACHINE_COUNT_SUM : int = 25                                         # 農機台数の合計
-    MACHINE_COUNT : int = 2                                              # 農機台数
+    MACHINE_COUNT : int = 2                                            # 農機台数
     LIER_NUMBER:int = 1                                                  # 嘘をついた農家の数
+
+    weather_probability = [0.5,0.4,0,0.1,0.9,0.9,0.2]
 
 # カスタム例外
 class OptimizationError(Exception):
@@ -67,7 +69,7 @@ class Weather:
         np.random.seed(seed)
         weather = []
         for d in range(self.days):
-            weather.append(self.config.WEATHER_RATE)
+            weather.append(self.config.weather_probability[d])
         return weather
         #return [random.random() for _ in range(self.days)]
 
@@ -77,7 +79,7 @@ class Weather:
         np.random.seed(seed)
         weather = []
         for d in range(self.days):
-            weather.append(self.config.WEATHER_RATE)
+            weather.append(self.config.weather_probability[d])
         return weather
         #return [0 if random.random() < prob else 1 for prob in forecast]
 
@@ -1588,7 +1590,7 @@ class FarmingSimulation:
 def setup_output_directory(config):
 
     """出力ディレクトリの設定"""
-    output_dir = Path(f'simulation_results_W:{config.WEATHER_RATE}_T:{config.TESTS}_M:{config.MACHINE_COUNT}_Spec:{config.WORK_EFFICIENCY}')
+    output_dir = Path(f'simulation_results_M:{config.MACHINE_COUNT}_Spec:{config.WORK_EFFICIENCY}_T:{config.TESTS}_')
     output_dir.mkdir(exist_ok=True)
     return output_dir
 def main():
