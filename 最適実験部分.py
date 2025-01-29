@@ -21,8 +21,8 @@ class SimulationConfig:
     TESTS: int = 100                                                      # シミュレーション実験回数
     COST_MOVE: float = 8.9355/3                                          # 農機1台を移動させるコスト（20分あたり）
     COST_CULTIVATION: float = (6.5+7.1)/2                                # 農地開墾を金額換算した値
-    WORK_EFFICIENCY: float = 8000                                       # 農機1台が1日に耕せる面積
-    AREA_AVERAGE: float = 34000.0                                        # 農地面積の平均値
+    WORK_EFFICIENCY: float = 10000                                       # 農機1台が1日に耕せる面積
+    AREA_AVERAGE: float = 32000.0                                        # 農地面積の平均値
     NEW_FARMER_AREA_AVERAGE: float = 34000.0                             # 新規就農者の農地面積の平均値
     FARMER_UTILITY: float = 6/7                                          # 農家が事前に申告する効用確率（労働意欲の確率）
     AREA_RANGE: float = 0.0                                              # 農地面積のばらつき幅
@@ -35,10 +35,10 @@ class SimulationConfig:
     NEW_FARMER_RATE_MIN: float = 0.0                                     # 新規就農者率の最小値
     NEW_FARMER_RATE_RANGE: float = 1/30                                  # 新規就農者の増加率
     NEW_FARMER_RATE_MAX: float = 0.21                                    # 新規就農者率の最大値
-    WEATHER_RATE: float = 0.7                                            # 天気予報の確率
+    #WEATHER_RATE: float = 0.7                                           # 天気予報の確率
     THERE_IS_A_LIER: bool  = True                                        # 農家0が農機台数を虚偽申告するか否か
     MACHINE_COUNT_SUM : int = 25                                         # 農機台数の合計
-    MACHINE_COUNT : int = 2                                            # 農機台数
+    MACHINE_COUNT : int = 2                                              # 農機台数
     LIER_NUMBER:int = 1                                                  # 嘘をついた農家の数
 
     weather_probability = [0.5,0.4,0,0.1,0.9,0.9,0.2]
